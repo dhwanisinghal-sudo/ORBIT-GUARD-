@@ -119,3 +119,29 @@ def propagate_many(tles: list[dict], when: datetime | None = None) -> list[dict]
             # skip them rather than let one bad object crash the whole batch.
             continue
     return results
+
+
+# Default offsets used for trajectory prediction, matching Week 3 of the plan.
+DEFAULT_TRAJECTORY_HOURS = [0, 1, 6, 12, 24, 48]
+
+
+def propagate_trajectory(tle: dict, hours_ahead: list[float] = None) -> list[dict]:
+    """
+    Predict an object's position at several points in the future.
+
+    hours_ahead: list of hour offsets from now, e.g. [0, 1, 6, 12, 24, 48].
+    Returns one propagated position per offset (skipping any that error out).
+    """
+    hours_ahead = hours_ahead if hours_ahead is not None else DEFAULT_TRAJECTORY_HOURS
+    now = datetime.now(timezone.utc)
+
+    trajectory = []
+    for h in hours_ahead:
+        when = now + timedelta(hours=h)
+        try:
+            point = propagate(tle, when)
+            point["hours_from_now"] = h
+            trajectory.append(point)
+        except RuntimeError:
+            continue
+    return trajectory

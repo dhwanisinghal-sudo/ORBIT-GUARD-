@@ -63,6 +63,53 @@ def _make_conjunction(a: dict, b: dict, distance_km: float) -> dict:
     }
 
 
+def simulate_altitude_adjustment(
+    object_to_move: dict, other_object: dict, altitude_delta_km: float
+) -> dict:
+    """
+    What-if maneuver simulator (Week 7).
+
+    Shifts object_to_move's position radially outward (positive delta) or
+    inward (negative delta) by altitude_delta_km, then recomputes its distance
+    to other_object. This is a simplified simulation, not a real spacecraft
+    maneuver planner - per the plan, it just needs to demonstrate how a
+    trajectory change affects the predicted conjunction.
+
+    Returns before/after distance and risk level.
+    """
+    p = object_to_move["position_km"]
+    radius = math.sqrt(p["x"] ** 2 + p["y"] ** 2 + p["z"] ** 2)
+    if radius == 0:
+        raise ValueError("Cannot adjust altitude of an object at the origin")
+
+    # unit vector pointing away from Earth's center, then push the object
+    # along it by altitude_delta_km (a simple radial burn approximation)
+    scale = (radius + altitude_delta_km) / radius
+    new_position = {
+        "x": p["x"] * scale,
+        "y": p["y"] * scale,
+        "z": p["z"] * scale,
+    }
+    adjusted = dict(object_to_move)
+    adjusted["position_km"] = new_position
+    adjusted["altitude_km"] = round(object_to_move["altitude_km"] + altitude_delta_km, 2)
+
+    before_distance = _distance_km(object_to_move, other_object)
+    after_distance = _distance_km(adjusted, other_object)
+
+    return {
+        "altitude_delta_km": altitude_delta_km,
+        "before": {
+            "distance_km": round(before_distance, 3),
+            "risk_level": _risk_level(before_distance),
+        },
+        "after": {
+            "distance_km": round(after_distance, 3),
+            "risk_level": _risk_level(after_distance),
+        },
+    }
+
+
 def find_conjunctions_naive(
     objects: list[dict], threshold_km: float = DEFAULT_THRESHOLD_KM
 ) -> list[dict]:

@@ -81,6 +81,23 @@ def get_object(norad_id: int):
         raise HTTPException(status_code=502, detail=f"Failed to fetch/propagate {norad_id}: {exc}")
 
 
+@app.get("/trajectory/{norad_id}")
+def get_trajectory(norad_id: int, hours: str = "0,1,6,12,24,48"):
+    """
+    Predict a single object's position at several points in the future.
+
+    Query params:
+      hours: comma-separated hour offsets from now, e.g. "0,1,6,12,24,48"
+    """
+    try:
+        hours_list = [float(h) for h in hours.split(",")]
+        tle = engine.fetch_tle(norad_id)
+        trajectory = engine.propagate_trajectory(tle, hours_ahead=hours_list)
+        return {"norad_id": norad_id, "count": len(trajectory), "trajectory": trajectory}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to predict trajectory for {norad_id}: {exc}")
+
+
 @app.get("/conjunctions")
 def list_conjunctions(
     group: str = "stations",
@@ -116,3 +133,36 @@ def list_conjunctions(
         }
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Failed to detect conjunctions: {exc}")
+
+
+@app.get("/what-if")
+def what_if_maneuver(
+    norad_id: int,
+    other_norad_id: int,
+    altitude_delta_km: float,
+):
+    """
+    What-if maneuver simulator (Week 7 - the "wow feature").
+
+    Simulates shifting one object's altitude and shows how the predicted
+    distance to another object changes as a result.
+
+    Query params:
+      norad_id: the object being maneuvered (altitude adjusted)
+      other_norad_id: the object it's being compared against
+      altitude_delta_km: how much to shift altitude (+outward, -inward)
+    """
+    try:
+        tle_a = engine.fetch_tle(norad_id)
+        tle_b = engine.fetch_tle(other_norad_id)
+        obj_a = engine.propagate(tle_a)
+        obj_b = engine.propagate(tle_b)
+
+        result = conj.simulate_altitude_adjustment(obj_a, obj_b, altitude_delta_km)
+        return {
+            "object_1": {"name": obj_a["name"], "norad_id": obj_a["norad_id"]},
+            "object_2": {"name": obj_b["name"], "norad_id": obj_b["norad_id"]},
+            **result,
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to simulate maneuver: {exc}")
