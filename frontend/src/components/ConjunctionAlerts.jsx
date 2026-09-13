@@ -1,31 +1,23 @@
-const alerts = [
-  {
-    objectA: "SAT-1042",
-    objectB: "DEBRIS-7831",
-    distance: "2.4 km",
-    velocity: "7.4 km/s",
-    time: "11h 32m",
-    risk: "HIGH"
-  },
-  {
-    objectA: "SAT-2218",
-    objectB: "DEBRIS-1120",
-    distance: "5.7 km",
-    velocity: "6.1 km/s",
-    time: "18h 44m",
-    risk: "MEDIUM"
-  },
-  {
-    objectA: "SAT-8897",
-    objectB: "DEBRIS-4491",
-    distance: "12.3 km",
-    velocity: "5.8 km/s",
-    time: "31h 07m",
-    risk: "LOW"
-  }
-];
+import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
+import { getConjunctions } from "../api";
 
 export default function ConjunctionAlerts() {
+  const [conjunctions, setConjunctions] = useState([]);
+
+  useEffect(() => {
+    async function loadAlerts() {
+      try {
+        const data = await getConjunctions("stations", 100, 5);
+        setConjunctions(data.conjunctions.slice(0, 3));
+      } catch (error) {
+        console.error("Failed to load conjunction alerts:", error);
+      }
+    }
+
+    loadAlerts();
+  }, []);
+
   return (
     <section className="alerts-section">
 
@@ -35,47 +27,62 @@ export default function ConjunctionAlerts() {
 
       <div className="alerts">
 
-        {alerts.map((alert, index) => (
+        {conjunctions.length === 0 && (
+          <div className="alert-card">
+            <p>No close approaches detected.</p>
+          </div>
+        )}
 
+        {conjunctions.map((alert, index) => (
           <div className="alert-card" key={index}>
 
             <div className="alert-header">
+
               <span>
-                {alert.objectA} ↔ {alert.objectB}
+                {alert.object_1.name} ↔ {alert.object_2.name}
               </span>
 
               <span
-                className={`risk-badge ${alert.risk.toLowerCase()}`}
+                className={`risk-badge ${alert.risk_level.toLowerCase()}`}
               >
-                {alert.risk}
+                {alert.risk_level}
               </span>
+
             </div>
 
             <div className="alert-details">
 
               <div>
                 <small>MISS DISTANCE</small>
-                <strong>{alert.distance}</strong>
+                <strong>
+                  {alert.distance_km} km
+                </strong>
               </div>
 
               <div>
                 <small>REL. VELOCITY</small>
-                <strong>{alert.velocity}</strong>
+                <strong>
+                  {alert.relative_velocity_km_s} km/s
+                </strong>
               </div>
 
               <div>
-                <small>TCA</small>
-                <strong>{alert.time}</strong>
+                <small>NORAD PAIR</small>
+                <strong>
+                  {alert.object_1.norad_id} / {alert.object_2.norad_id}
+                </strong>
               </div>
 
             </div>
 
-            <button className="analysis-button">
+            <Link
+              className="analysis-button"
+              to={`/conjunctions/${alert.object_1.norad_id}/${alert.object_2.norad_id}`}
+            >
               VIEW ANALYSIS →
-            </button>
+            </Link>
 
           </div>
-
         ))}
 
       </div>

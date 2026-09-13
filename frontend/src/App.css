@@ -569,3 +569,154 @@ button {
   height: 100% !important;
   display: block;
 }
+/* =========================
+   OBJECTS / DETAILS PAGES
+   ========================= */
+
+.object-summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.object-summary span,
+.card-label {
+  font-size: 11px;
+  letter-spacing: 1.5px;
+  color: #718096;
+}
+
+.object-summary strong {
+  font-size: 24px;
+  color: #20d88a;
+}
+
+.object-table-wrapper,
+.trajectory-table-wrapper {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.object-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.object-table th {
+  text-align: left;
+  padding: 14px 12px;
+  color: #718096;
+  font-size: 10px;
+  letter-spacing: 1px;
+  border-bottom: 1px solid #1c2733;
+}
+
+.object-table td {
+  padding: 14px 12px;
+  border-bottom: 1px solid #111b25;
+  color: #cbd5e0;
+}
+
+.object-table tr:hover {
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.view-button {
+  display: inline-block;
+  padding: 7px 12px;
+  border: 1px solid #21466b;
+  color: #4da3ff;
+  text-decoration: none;
+  font-size: 10px;
+  letter-spacing: 1px;
+}
+
+.view-button:hover {
+  background: #10283d;
+}
+
+.details-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.big-value {
+  display: block;
+  margin-top: 10px;
+  font-size: 24px;
+  color: #e2e8f0;
+}
+
+.back-link {
+  display: inline-block;
+  margin-top: 18px;
+  color: #4da3ff;
+  text-decoration: none;
+  font-size: 12px;
+  letter-spacing: 1px;
+}
+.maneuver-controls {
+  display: flex;
+  align-items: end;
+  gap: 16px;
+  margin-top: 20px;
+  margin-bottom: 24px;
+}
+
+.maneuver-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  color: #718096;
+  font-size: 10px;
+  letter-spacing: 1px;
+}
+
+.maneuver-controls input {
+  width: 130px;
+  padding: 10px;
+  background: #07101a;
+  border: 1px solid #263746;
+  color: #e2e8f0;
+  outline: none;
+}
+
+.maneuver-controls input:focus {
+  border-color: #4da3ff;
+}
+
+.maneuver-controls button:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.analysis-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.analysis-metrics > div {
+  padding: 16px;
+  background: #07101a;
+  border: 1px solid #172431;
+}
+
+.analysis-metrics span {
+  display: block;
+  margin-bottom: 8px;
+  color: #718096;
+  font-size: 10px;
+  letter-spacing: 1px;
+}
+
+.analysis-metrics strong {
+  display: block;
+  color: #e2e8f0;
+  font-size: 18px;
+}

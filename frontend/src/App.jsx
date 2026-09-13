@@ -1,84 +1,48 @@
+import { BrowserRouter, Routes, Route } from "react-router-dom";
+
 import Header from "./components/Header";
-import RiskOverview from "./components/RiskOverview";
-import ConjunctionAlerts from "./components/ConjunctionAlerts";
-import SpaceScene from "./components/SpaceScene";
+
+import Overview from "./pages/Overview";
+import OrbitalMap from "./pages/OrbitalMap";
+import Conjunctions from "./pages/Conjunctions";
+import Objects from "./pages/Objects";
+import ObjectDetails from "./pages/ObjectDetails";
+import ConjunctionAnalysis from "./pages/ConjunctionAnalysis";
 
 import "./App.css";
 
 function App() {
   return (
-    <div className="app">
+    <BrowserRouter>
 
-      <Header />
+      <div className="app">
 
-      <main className="dashboard">
+        <Header />
 
-        <div className="top-bar">
-          <div className="time-controls">
-            <button className="selected">LIVE</button>
-            <button>1H</button>
-            <button>6H</button>
-            <button>24H</button>
-            <button>48H</button>
-          </div>
+        <Routes>
+          <Route
+            path="/conjunctions/:object1Id/:object2Id"
+            element={<ConjunctionAnalysis />}
+          />
 
-          <span className="timestamp">
-            2026-09-13 14:27:38 UTC
-          </span>
-        </div>
+          <Route path="/" element={<Overview />} />
 
-        <div className="main-grid">
+          <Route path="/orbital-map" element={<OrbitalMap />} />
 
-          <div className="orbital-area">
-             <SpaceScene />
+          <Route path="/conjunctions" element={<Conjunctions />} />
 
-            <div className="map-label">
-              ORBITAL MAP
-            </div>
-          </div>
+          <Route path="/objects" element={<Objects />} />
 
-          <aside className="sidebar">
+          <Route
+            path="/objects/:noradId"
+            element={<ObjectDetails />}
+          />
 
-            <RiskOverview />
+        </Routes>
 
-            <ConjunctionAlerts />
+      </div>
 
-          </aside>
-
-        </div>
-
-        <footer className="stats-bar">
-
-          <div>
-            <span>OBJECTS TRACKED</span>
-            <strong>2,483</strong>
-          </div>
-
-          <div>
-            <span>ACTIVE CONJUNCTIONS</span>
-            <strong>15</strong>
-          </div>
-
-          <div>
-            <span>DEBRIS TRACKED</span>
-            <strong>1,842</strong>
-          </div>
-
-          <div>
-            <span>ACTIVE SATELLITES</span>
-            <strong>641</strong>
-          </div>
-
-          <div>
-            <span>LAST UPDATE</span>
-            <strong>2 min ago</strong>
-          </div>
-
-        </footer>
-
-      </main>
-
-    </div>
+    </BrowserRouter>
   );
 }
 

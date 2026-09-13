@@ -1,10 +1,10 @@
 import { useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 
-
 export default function Satellite({
   position = [3, 0, 0],
   risk = "low",
+  name = "UNKNOWN",
 }) {
   const satelliteRef = useRef();
 
@@ -21,16 +21,19 @@ export default function Satellite({
     critical: "#ff3b3b",
   };
 
+  const color =
+    riskColors[risk.toLowerCase()] || "#ffffff";
+
   return (
     <mesh
       ref={satelliteRef}
       position={position}
     >
-      <sphereGeometry args={[0.08, 16, 16]} />
+      <sphereGeometry args={[0.06, 16, 16]} />
 
       <meshStandardMaterial
-        color={riskColors[risk.toLowerCase()] || "#ffffff"}
-        emissive={riskColors[risk.toLowerCase()] || "#ffffff"}
+        color={color}
+        emissive={color}
         emissiveIntensity={2}
       />
     </mesh>
