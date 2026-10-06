@@ -20,6 +20,9 @@ orbitguard/
 │   ├── orbit_engine.py   # CelesTrak fetch + SGP4 propagation
 │   ├── conjunction.py    # Conjunction detection + what-if simulator
 │   ├── cache.py          # SQLite caching layer
+│   ├── auth.py           # Registration, login, JWT auth
+│   ├── watchlist.py      # Per-user satellite watchlist
+│   ├── ml_risk.py        # Random Forest risk scoring
 │   └── fetch_and_propagate.py  # standalone CLI script (Day 1 prototype)
 ├── frontend/             # React + Three.js dashboard
 └── index.html            # Standalone single-file dashboard (no build step needed)
@@ -51,10 +54,28 @@ API docs available at `http://127.0.0.1:8000/docs` once running.
 | `GET /trajectory/{norad_id}` | Predicted future positions (`?hours=0,1,6,12,24,48`) |
 | `GET /what-if` | Simulates an altitude adjustment and shows before/after risk (`?norad_id=&other_norad_id=&altitude_delta_km=`) |
 | `GET /cache-status` | Shows cache freshness for a given group |
+| `GET /model-info` | ML risk model accuracy, per-class metrics, feature importance |
+| `GET /risk-score` | ML risk score for a hypothetical close approach (`?distance_km=&relative_velocity_km_s=&altitude_km=`) |
+| `POST /auth/register` | Create an account (`name`, `email`, `password`) and get a JWT |
+| `POST /auth/login` | Log in (`email`, `password`) and get a JWT |
+| `GET /auth/me` | Current user (requires `Authorization: Bearer <token>`) |
+| `POST /watchlist` | Add a satellite to your watchlist (auth required) |
+| `GET /watchlist` | List your watchlist (`?live=true` adds current positions) |
+| `DELETE /watchlist/{norad_id}` | Remove a satellite from your watchlist |
+
+`GET /conjunctions` also accepts `?ml=true` to add `ml_risk_level`, `ml_risk_score` and `ml_probabilities` from the ML model.
+
+### ML risk scoring
+
+A Random Forest classifier scores each conjunction (LOW / MEDIUM / HIGH) from distance, relative velocity, mean altitude and altitude gap. **Note:** there is no public dataset of real collision outcomes, so the model is trained on synthetic labels from a physics-inspired formula plus noise. It is a scoring framework ready to be retrained on real conjunction data (e.g. CDMs), not a validated collision predictor. Run `python ml_risk.py` to retrain; `/model-info` reports the metrics.
+
+### Authentication
+
+Passwords are hashed with PBKDF2-SHA256 and sessions use JWT. Set the `ORBITGUARD_SECRET` environment variable in any real deployment.
 
 ### Tech
 
-Python, FastAPI, [sgp4](https://pypi.org/project/sgp4/), [skyfield](https://rhodesmill.org/skyfield/), scipy (KDTree), SQLite.
+Python, FastAPI, scikit-learn, PyJWT, [sgp4](https://pypi.org/project/sgp4/), [skyfield](https://rhodesmill.org/skyfield/), scipy (KDTree), SQLite.
 
 ## Frontend
 
@@ -78,7 +99,9 @@ The backend has been tested against live CelesTrak data — e.g. the ISS reliabl
 - [ ] Scale to 100+ tracked objects (currently tested with ~10–20)
 - [ ] Migrate SQLite cache to Postgres
 - [ ] WebSocket push instead of polling
-- [ ] ML-based risk scoring (Random Forest / XGBoost) alongside the current rule-based system
+- [x] ML-based risk scoring (Random Forest) alongside the current rule-based system
+- [x] User registration, login and per-user watchlist
+- [ ] Retrain ML model on real conjunction data
 
 ## Contributors
 
