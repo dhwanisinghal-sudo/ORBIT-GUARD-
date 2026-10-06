@@ -6,3 +6,5 @@ skyfield
 scipy
 numpy
 PyJWT
+scikit-learn
+joblib
