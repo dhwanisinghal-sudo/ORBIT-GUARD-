@@ -20,6 +20,7 @@ import orbit_engine as engine
 import conjunction as conj
 import cache
 import auth
+import ml_risk
 
 app = FastAPI(title="OrbitGuard API", version="0.2.0")
 app.include_router(auth.router)
@@ -106,6 +107,7 @@ def list_conjunctions(
     limit: int | None = None,
     threshold_km: float = 5.0,
     method: str = "naive",
+    ml: bool = False,
 ):
     """
     Detect close approaches (conjunctions) among a group of tracked objects.
@@ -116,6 +118,8 @@ def list_conjunctions(
       threshold_km: distance below which two objects count as a conjunction
       method: "naive" (O(n^2), fine up to ~1000 objects) or "kdtree"
               (faster at scale - see Week 4 of the project plan)
+      ml: if true, also add ML risk fields (ml_risk_level, ml_risk_score,
+          ml_probabilities) from the Random Forest model
     """
     try:
         tles = _get_tles(group=group, limit=limit)
@@ -126,10 +130,14 @@ def list_conjunctions(
         else:
             results = conj.find_conjunctions_naive(objects, threshold_km=threshold_km)
 
+        if ml:
+            results = ml_risk.score_conjunctions(results)
+
         return {
             "objects_checked": len(objects),
             "threshold_km": threshold_km,
             "method": method,
+            "ml": ml,
             "count": len(results),
             "conjunctions": results,
         }
@@ -168,3 +176,20 @@ def what_if_maneuver(
         }
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Failed to simulate maneuver: {exc}")
+
+
+@app.get("/model-info")
+def model_info():
+    """Describe the ML risk model: accuracy, per-class metrics, feature importance."""
+    return ml_risk.get_metrics()
+
+
+@app.get("/risk-score")
+def risk_score(distance_km: float, relative_velocity_km_s: float, altitude_km: float = 500.0, altitude_gap_km: float = 0.0):
+    """Score a hypothetical close approach with the ML model (handy for demos and the what-if UI)."""
+    conj_like = {
+        "distance_km": distance_km,
+        "relative_velocity_km_s": relative_velocity_km_s,
+        "altitude_km": {"object_1": altitude_km + altitude_gap_km / 2, "object_2": altitude_km - altitude_gap_km / 2},
+    }
+    return ml_risk.score_conjunctions([conj_like])[0] | {"rule_based_risk_level": conj._risk_level(distance_km)}
