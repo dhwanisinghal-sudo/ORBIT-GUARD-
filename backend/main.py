@@ -19,8 +19,10 @@ from fastapi.middleware.cors import CORSMiddleware
 import orbit_engine as engine
 import conjunction as conj
 import cache
+import auth
 
-app = FastAPI(title="OrbitGuard API", version="0.1.0")
+app = FastAPI(title="OrbitGuard API", version="0.2.0")
+app.include_router(auth.router)
 
 # Allow the React dev server (usually localhost:5173 for Vite) to call this
 # API from the browser. Tighten this once you deploy for real.
