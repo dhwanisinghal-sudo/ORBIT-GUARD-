@@ -59,6 +59,7 @@ def _make_conjunction(a: dict, b: dict, distance_km: float) -> dict:
         "object_2": {"name": b["name"], "norad_id": b["norad_id"]},
         "distance_km": round(distance_km, 3),
         "relative_velocity_km_s": round(_relative_velocity_km_s(a, b), 3),
+        "altitude_km": {"object_1": a.get("altitude_km"), "object_2": b.get("altitude_km")},
         "risk_level": _risk_level(distance_km),
     }
 
