@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+requests
+sgp4
+skyfield
+scipy
+numpy
+PyJWT
