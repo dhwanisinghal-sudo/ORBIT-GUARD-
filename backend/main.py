@@ -21,9 +21,11 @@ import conjunction as conj
 import cache
 import auth
 import ml_risk
+import watchlist
 
-app = FastAPI(title="OrbitGuard API", version="0.2.0")
+app = FastAPI(title="OrbitGuard API", version="0.3.0")
 app.include_router(auth.router)
+app.include_router(watchlist.router)
 
 # Allow the React dev server (usually localhost:5173 for Vite) to call this
 # API from the browser. Tighten this once you deploy for real.
