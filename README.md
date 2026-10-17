@@ -67,7 +67,7 @@ API docs available at `http://127.0.0.1:8000/docs` once running.
 |---|---|
 | `GET /objects` | Live positions for a group of tracked satellites (`?group=stations` or `?group=active`, `?limit=`) |
 | `GET /objects/{norad_id}` | Position for a single satellite by NORAD catalog ID |
-| `GET /conjunctions` | Detected close approaches with risk levels (`?threshold_km=`, `?method=naive\|kdtree`) |
+| `GET /conjunctions` | Detected close approaches with risk levels (`?threshold_km=`, `?method=kdtree\|naive`; `kdtree` is the default and handles the full `active` catalog in milliseconds, `naive` is the O(n²) reference and is refused above 1,500 objects) |
 | `GET /conjunctions/forecast` | Screens the next `?hours=` (max 72) and returns each close approach with its **time of closest approach (TCA)**, miss distance and relative speed (`?threshold_km=`, `?step_seconds=`, `?start=`, `?include_coorbiting=`, `?ml=true`) |
 | `GET /trajectory/{norad_id}` | Predicted future positions (`?hours=0,1,6,12,24,48`) |
 | `GET /what-if` | Simulates an altitude adjustment and shows before/after risk (`?norad_id=&other_norad_id=&altitude_delta_km=`) |

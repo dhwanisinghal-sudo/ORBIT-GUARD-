@@ -59,6 +59,10 @@ app.add_middleware(
 # objects x time steps allowed in one /conjunctions/forecast request (keeps memory bounded)
 MAX_FORECAST_WORK = 12_000_000
 
+# The naive snapshot check compares every pair (O(n^2)): ~1.7 s at 3,000 objects, ~9 s at 7,000.
+# Above this size it is refused so one request can't tie up a worker; kdtree gives the same answer.
+MAX_NAIVE_OBJECTS = 1500
+
 
 def _get_tles_meta(group: str = engine.GROUP_STATIONS, limit: int | None = None, force_refresh: bool = False):
     """Group TLEs through the cache -> (tles, cache_meta)."""
@@ -115,8 +119,11 @@ def _http_error(exc: Exception, context: str) -> HTTPException:
       ValueError             -> 400 (bad input from the caller)
       RuntimeError           -> 422 (object can't be propagated, e.g. decayed)
       requests.RequestException -> 502 (CelesTrak unreachable / errored)
+      HTTPException          -> passed through unchanged
       anything else          -> 500 (our bug)
     """
+    if isinstance(exc, HTTPException):
+        return exc
     if isinstance(exc, engine.TLENotFound):
         return HTTPException(status_code=404, detail=str(exc))
     if isinstance(exc, ValueError):
@@ -229,7 +236,7 @@ def list_conjunctions(
     group: str = "stations",
     limit: int | None = None,
     threshold_km: float = 5.0,
-    method: str = "naive",
+    method: str = "kdtree",
     ml: bool = False,
 ):
     """
@@ -239,8 +246,9 @@ def list_conjunctions(
       group: CelesTrak group name (default "stations")
       limit: cap the number of objects considered
       threshold_km: distance below which two objects count as a conjunction
-      method: "naive" (O(n^2), fine up to ~1000 objects) or "kdtree"
-              (faster at scale - see Week 4 of the project plan)
+      method: "kdtree" (default; ~milliseconds even for the whole active catalog) or
+              "naive" (O(n^2) reference implementation, refused above MAX_NAIVE_OBJECTS
+              objects). Both return identical results.
       ml: if true, also add ML risk fields (ml_risk_level, ml_risk_score,
           ml_probabilities) from the Random Forest model
     """
@@ -254,6 +262,13 @@ def list_conjunctions(
         tles, cache_meta = _get_tles_meta(group=group, limit=limit)
         prop = engine.propagate_many_with_stats(tles)
         objects = prop["objects"]
+
+        if method == "naive" and len(objects) > MAX_NAIVE_OBJECTS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"method=naive is limited to {MAX_NAIVE_OBJECTS} objects (got {len(objects)}); "
+                       "use method=kdtree, which returns the same results far faster",
+            )
 
         if method == "kdtree":
             results = conj.find_conjunctions_kdtree(objects, threshold_km=threshold_km)
