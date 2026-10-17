@@ -20,6 +20,8 @@ orbitguard/
 │   ├── orbit_engine.py   # CelesTrak fetch + SGP4 propagation
 │   ├── conjunction.py    # Conjunction detection (snapshot)
 │   ├── maneuver.py       # What-if maneuver: delta-v -> re-propagate -> new TCA / miss distance
+│   ├── geodetic.py       # TEME -> latitude / longitude / height (WGS-84)
+│   ├── ground_track.py   # Sub-satellite track over a time window
 │   ├── conjunction_window.py  # Time-window screening with time of closest approach (TCA)
 │   ├── cache.py          # SQLite TLE cache (groups + single objects)
 │   ├── config.py         # Environment-variable settings, validated at startup
@@ -68,7 +70,8 @@ API docs available at `http://127.0.0.1:8000/docs` once running.
 | Endpoint | Description |
 |---|---|
 | `GET /objects` | Live positions for a group of tracked satellites (`?group=stations` or `?group=active`, `?limit=`) |
-| `GET /objects/{norad_id}` | Position for a single satellite by NORAD catalog ID |
+| `GET /objects/{norad_id}` | Position for a single satellite by NORAD catalog ID. Every position now also carries `latitude_deg`, `longitude_deg` and `geodetic_altitude_km` (height above the WGS-84 ellipsoid; `altitude_km` stays `\|r\| - 6371`) |
+| `GET /ground-track/{norad_id}` | Sub-satellite latitude/longitude over `?hours=` (default 1.5, max 72) every `?step_seconds=` (default 30), from `?start=`. Returns `points` plus `segments` already split at the ±180° meridian for map layers |
 | `GET /conjunctions` | Detected close approaches with risk levels (`?threshold_km=`, `?method=kdtree\|naive`; `kdtree` is the default and handles the full `active` catalog in milliseconds, `naive` is the O(n²) reference and is refused above 1,500 objects) |
 | `GET /conjunctions/forecast` | Screens the next `?hours=` (max 72) and returns each close approach with its **time of closest approach (TCA)**, miss distance and relative speed (`?threshold_km=`, `?step_seconds=`, `?start=`, `?include_coorbiting=`, `?ml=true`) |
 | `GET /trajectory/{norad_id}` | Predicted future positions (`?hours=0,1,6,12,24,48`) |

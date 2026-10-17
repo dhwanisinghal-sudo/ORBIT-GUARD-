@@ -12,6 +12,8 @@ from datetime import datetime, timezone, timedelta
 import requests
 from sgp4.api import Satrec, WGS72, jday
 
+import geodetic
+
 CELESTRAK_URL = "https://celestrak.org/NORAD/elements/gp.php"
 EARTH_RADIUS_KM = 6371.0
 
@@ -206,6 +208,8 @@ def propagate(tle: dict, when: datetime | None = None) -> dict:
 
     radius = math.sqrt(x**2 + y**2 + z**2)
     altitude_km = radius - EARTH_RADIUS_KM
+    # sub-satellite point on the WGS-84 ellipsoid (for maps); altitude_km above stays |r| - 6371
+    lat_deg, lon_deg, height_km = geodetic.teme_to_geodetic_scalar(x, y, z, jd, fr)
 
     return {
         "name": tle["name"],
@@ -214,6 +218,9 @@ def propagate(tle: dict, when: datetime | None = None) -> dict:
         "position_km": {"x": round(x, 3), "y": round(y, 3), "z": round(z, 3)},
         "velocity_km_s": {"x": round(vx, 3), "y": round(vy, 3), "z": round(vz, 3)},
         "altitude_km": round(altitude_km, 2),
+        "latitude_deg": round(lat_deg, 4),
+        "longitude_deg": round(lon_deg, 4),
+        "geodetic_altitude_km": round(height_km, 2),
         **tle_age_info(tle, when),
     }
 

@@ -29,6 +29,7 @@ import config
 import ml_risk
 import watchlist
 import forecast_service as svc
+import ground_track as gt
 import maneuver
 
 log = logging.getLogger("uvicorn.error")   # so startup messages show in uvicorn's console output
@@ -403,6 +404,39 @@ def what_if_maneuver(
         }
     except Exception as exc:
         raise _http_error(exc, "Failed to simulate maneuver")
+
+
+@app.get("/ground-track/{norad_id}")
+def get_ground_track(norad_id: int, hours: float = 1.5, step_seconds: float = 30.0, start: str | None = None):
+    """
+    Sub-satellite latitude/longitude over a time window, ready to draw on a map.
+
+    Query params:
+      hours: window length, 0 < hours <= 72 (default 1.5, about one ISS orbit)
+      step_seconds: sample spacing, 5-600 s (default 30)
+      start: ISO-8601 UTC start time (default: now)
+
+    Returns `points` ({t, lat, lon, height_km}) and `segments` - the same track split into
+    [lon, lat] runs wherever it crosses the +-180 degree meridian, so map layers do not draw a
+    line across the whole globe. height_km is above the WGS-84 ellipsoid.
+    """
+    try:
+        gt.validate_params(hours, step_seconds)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    start_dt = svc.parse_start(start)
+    try:
+        tle, cache_meta = _get_tle(norad_id)
+        track = gt.compute_ground_track(tle, start=start_dt, hours=hours, step_seconds=step_seconds)
+        warnings = _warnings(cache_meta=cache_meta)
+        if track.get("tle_warning"):
+            warnings.append(track["tle_warning"])
+        if track["skipped_points"]:
+            warnings.append(f"{track['skipped_points']} point(s) could not be propagated "
+                            "(SGP4 error - often a very old TLE or a time far from its epoch)")
+        return {"norad_id": norad_id, "name": tle["name"], **track, "cache": cache_meta, "warnings": warnings}
+    except Exception as exc:
+        raise _http_error(exc, f"Failed to compute ground track for {norad_id}")
 
 
 @app.get("/model-info")
