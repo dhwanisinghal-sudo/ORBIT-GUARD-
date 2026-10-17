@@ -8,6 +8,7 @@ import pytest
 
 import auth
 import cache
+import watchlist
 
 
 @pytest.fixture(autouse=True)
@@ -16,3 +17,4 @@ def isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(cache, "DB_PATH", tmp_path / "cache.db")
     monkeypatch.setattr(auth, "DB_PATH", tmp_path / "users.db")
     auth.reset_rate_limits()
+    watchlist.reset_rate_limits()

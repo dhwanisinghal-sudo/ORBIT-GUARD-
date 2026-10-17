@@ -41,6 +41,8 @@ skipped and counted in the result.
 
 from datetime import datetime, timedelta, timezone
 
+import itertools
+
 import numpy as np
 from scipy.spatial import cKDTree
 from sgp4.api import Satrec, SatrecArray, WGS72, jday
@@ -127,6 +129,28 @@ def _refine_tca(sat_a: Satrec, sat_b: Satrec, jd: float, fr: float, s0: float):
             float(np.linalg.norm(a[0]) - 6371.0), float(np.linalg.norm(b[0]) - 6371.0))
 
 
+def _focus_pairs(tree, pts: np.ndarray, is_focus: np.ndarray, radius: float) -> np.ndarray:
+    """
+    Index pairs (i < j) within `radius` that involve at least one focus point.
+    Same format as cKDTree.query_pairs(output_type="ndarray"), restricted to the focus set.
+    """
+    f_idx = np.nonzero(is_focus)[0]
+    if f_idx.size == 0:
+        return np.empty((0, 2), dtype=np.intp)
+    nbrs = tree.query_ball_point(pts[f_idx], radius)
+    counts = np.fromiter(map(len, nbrs), dtype=np.intp, count=len(nbrs))
+    total = int(counts.sum())
+    if total == 0:
+        return np.empty((0, 2), dtype=np.intp)
+    a = np.repeat(f_idx, counts)
+    b = np.fromiter(itertools.chain.from_iterable(nbrs), dtype=np.intp, count=total)
+    keep = a != b
+    # two focus points find each other from both sides: keep one copy
+    keep &= ~(is_focus[a] & is_focus[b]) | (a < b)
+    pairs = np.stack([a[keep], b[keep]], axis=1)
+    return np.sort(pairs, axis=1)       # i < j, like query_pairs (keeps pair keys canonical)
+
+
 def find_conjunctions_in_window(
     tles: list[dict],
     start: datetime | None = None,
@@ -135,9 +159,15 @@ def find_conjunctions_in_window(
     step_seconds: float = 60.0,
     min_relative_speed_km_s: float = DEFAULT_MIN_REL_SPEED,
     include_coorbiting: bool = False,
+    focus_norad_ids=None,
 ) -> dict:
     """
     Screen `tles` for close approaches between `start` and `start + hours`.
+
+    focus_norad_ids: if given, only pairs involving at least one of these NORAD ids are
+    reported (e.g. a user's watchlist against the whole catalog). The result is exactly the
+    full result filtered to those pairs, but much cheaper: only the focus objects' neighbours
+    are searched at each time step instead of every pair in the catalog.
 
     Returns a dict with the conjunctions (sorted by miss distance, closest first)
     plus stats about what was screened.
@@ -167,6 +197,10 @@ def find_conjunctions_in_window(
         sats.append(sat)
         meta.append(info)
     n = len(sats)
+    focus_mask = None
+    if focus_norad_ids is not None:
+        wanted = {int(i) for i in focus_norad_ids}
+        focus_mask = np.array([m["norad_id"] in wanted for m in meta], dtype=bool)
 
     total_s = hours * 3600.0
     secs = np.arange(0.0, total_s, step_seconds)
@@ -205,7 +239,11 @@ def find_conjunctions_in_window(
             if idx.size < 2:
                 continue
             pts, vel = r[idx, t, :], v[idx, t, :]
-            found = cKDTree(pts).query_pairs(screen_radius, output_type="ndarray")
+            tree = cKDTree(pts)
+            if focus_mask is None:
+                found = tree.query_pairs(screen_radius, output_type="ndarray")
+            else:
+                found = _focus_pairs(tree, pts, focus_mask[idx], screen_radius)
             if not found.size:
                 continue
             dr = pts[found[:, 0]] - pts[found[:, 1]]

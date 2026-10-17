@@ -24,7 +24,8 @@ orbitguard/
 │   ├── config.py         # Environment-variable settings, validated at startup
 │   ├── ratelimit.py      # In-memory rate limiter used by login/register
 │   ├── auth.py           # Registration, login, JWT auth
-│   ├── watchlist.py      # Per-user satellite watchlist
+│   ├── watchlist.py      # Per-user satellite watchlist + conjunction alerts
+│   ├── forecast_service.py  # Shared validation, TLE-age and error helpers for the forecast endpoints
 │   ├── ml_risk.py        # Random Forest risk scoring
 │   ├── fetch_and_propagate.py  # standalone CLI script (Day 1 prototype)
 │   ├── tests/            # pytest suite (offline; CelesTrak is mocked)
@@ -80,10 +81,11 @@ API docs available at `http://127.0.0.1:8000/docs` once running.
 | `POST /watchlist` | Add a satellite to your watchlist (auth required) |
 | `GET /watchlist` | List your watchlist (`?live=true` adds current positions) |
 | `DELETE /watchlist/{norad_id}` | Remove a satellite from your watchlist |
+| `GET /watchlist/alerts` | Upcoming close approaches (with TCA) involving your saved satellites (auth required; same params as `/conjunctions/forecast`, default `group=active`; limited to 6 calls/min per user) |
 
 `GET /conjunctions` also accepts `?ml=true` to add `ml_risk_level`, `ml_risk_score` and `ml_probabilities` from the ML model.
 
-`GET /conjunctions` only compares positions at the current instant. `GET /conjunctions/forecast` scans a whole time window instead: it propagates every object on a coarse grid, uses a KDTree plus a straight-line approach estimate to discard pairs that cannot come close, then refines the time of closest approach of the survivors with exact SGP4 states. Objects flying in formation (e.g. a vehicle docked to the ISS) are excluded by default because they are not collision risks. Results are screening output: TLE accuracy degrades by several km per day, so treat distant-future TCAs with caution.
+`GET /conjunctions` only compares positions at the current instant. `GET /conjunctions/forecast` scans a whole time window instead: it propagates every object on a coarse grid, uses a KDTree plus a straight-line approach estimate to discard pairs that cannot come close, then refines the time of closest approach of the survivors with exact SGP4 states. Objects flying in formation (e.g. a vehicle docked to the ISS) are excluded by default because they are not collision risks. `GET /watchlist/alerts` runs the same screening but only for pairs that involve the caller's saved satellites, which is cheaper than a full-catalog forecast (about 9 s and 260 MB for the whole active catalog over 24 h on synthetic data, versus 25 s and 730 MB). Each watched satellite is listed with its own alert count; one whose TLE could not be fetched or propagated is marked `unavailable` with a reason, so "no alerts" is never confused with "could not check". Results are screening output: TLE accuracy degrades by several km per day, so treat distant-future TCAs with caution.
 
 ### TLE caching and data freshness
 

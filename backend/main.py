@@ -28,6 +28,7 @@ import auth
 import config
 import ml_risk
 import watchlist
+import forecast_service as svc
 
 log = logging.getLogger("uvicorn.error")   # so startup messages show in uvicorn's console output
 
@@ -57,7 +58,11 @@ app.add_middleware(
 
 
 # objects x time steps allowed in one /conjunctions/forecast request (keeps memory bounded)
-MAX_FORECAST_WORK = 12_000_000
+MAX_FORECAST_WORK = svc.MAX_FORECAST_WORK
+
+# shared with watchlist.py; kept under their old names for the endpoints below
+_warnings = svc.data_quality_warnings
+_http_error = svc.http_error
 
 # The naive snapshot check compares every pair (O(n^2)): ~1.7 s at 3,000 objects, ~9 s at 7,000.
 # Above this size it is refused so one request can't tie up a worker; kdtree gives the same answer.
@@ -91,48 +96,6 @@ def _get_tles_by_ids(norad_ids):
 def _check_limit(limit: int | None):
     if limit is not None and limit <= 0:
         raise HTTPException(status_code=400, detail="limit must be a positive integer")
-
-
-def _warnings(staleness: dict | None = None, skipped: int = 0, cache_meta: dict | None = None) -> list[str]:
-    """Human-readable notes about data quality, so nothing degrades silently."""
-    notes = []
-    if cache_meta and cache_meta.get("source") == "stale_cache":
-        mins = cache_meta["age_seconds"] / 60
-        notes.append(f"CelesTrak was unreachable; using cached TLEs from {mins:.0f} minutes ago")
-    if staleness:
-        if staleness.get("unreliable"):
-            notes.append(f"{staleness['unreliable']} object(s) have TLEs older than "
-                         f"{engine.UNRELIABLE_TLE_DAYS:g} days; their positions are unreliable")
-        if staleness.get("stale"):
-            notes.append(f"{staleness['stale']} object(s) have TLEs older than "
-                         f"{engine.STALE_TLE_DAYS:g} days; accuracy is degraded")
-    if skipped:
-        notes.append(f"{skipped} object(s) were skipped because SGP4 could not propagate them "
-                     "(decayed, malformed, or TLE too old)")
-    return notes
-
-
-def _http_error(exc: Exception, context: str) -> HTTPException:
-    """
-    Map an internal exception to the right HTTP status instead of a blanket 502.
-      TLENotFound            -> 404 (CelesTrak has no such object/group)
-      ValueError             -> 400 (bad input from the caller)
-      RuntimeError           -> 422 (object can't be propagated, e.g. decayed)
-      requests.RequestException -> 502 (CelesTrak unreachable / errored)
-      HTTPException          -> passed through unchanged
-      anything else          -> 500 (our bug)
-    """
-    if isinstance(exc, HTTPException):
-        return exc
-    if isinstance(exc, engine.TLENotFound):
-        return HTTPException(status_code=404, detail=str(exc))
-    if isinstance(exc, ValueError):
-        return HTTPException(status_code=400, detail=f"{context}: {exc}")
-    if isinstance(exc, RuntimeError):
-        return HTTPException(status_code=422, detail=f"{context}: {exc}")
-    if isinstance(exc, requests.RequestException):
-        return HTTPException(status_code=502, detail=f"{context}: upstream CelesTrak error ({exc})")
-    return HTTPException(status_code=500, detail=f"{context}: unexpected error ({exc})")
 
 
 @app.get("/")
@@ -324,35 +287,12 @@ def forecast_conjunctions(
       ml: add ML risk fields, as in /conjunctions
     """
     # validate cheaply before any network call
-    if not (0 < hours <= conjw.MAX_WINDOW_HOURS):
-        raise HTTPException(status_code=400, detail=f"hours must be > 0 and <= {conjw.MAX_WINDOW_HOURS:g}")
-    if not (conjw.MIN_STEP_S <= step_seconds <= conjw.MAX_STEP_S):
-        raise HTTPException(
-            status_code=400,
-            detail=f"step_seconds must be between {conjw.MIN_STEP_S:g} and {conjw.MAX_STEP_S:g}",
-        )
-    if threshold_km <= 0:
-        raise HTTPException(status_code=400, detail="threshold_km must be > 0")
+    start_dt = svc.validate_window_params(hours, threshold_km, step_seconds, start)
     _check_limit(limit)
-
-    start_dt = None
-    if start:
-        try:
-            start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
-        except ValueError:
-            raise HTTPException(status_code=400, detail="start must be ISO-8601, e.g. 2026-10-17T12:00:00Z")
 
     try:
         tles, cache_meta = _get_tles_meta(group=group, limit=limit)
-        n_steps = int(hours * 3600 / step_seconds) + 1
-        if len(tles) * n_steps > MAX_FORECAST_WORK:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"{len(tles)} objects x {n_steps} time steps is too much work for one request "
-                    f"(max {MAX_FORECAST_WORK:,}). Lower limit/hours or raise step_seconds."
-                ),
-            )
+        svc.check_work(len(tles), hours, step_seconds, limit=MAX_FORECAST_WORK)
 
         out = conjw.find_conjunctions_in_window(
             tles,
@@ -368,30 +308,10 @@ def forecast_conjunctions(
 
         # TLE age at the window start, per object and overall
         ref = start_dt or datetime.now(timezone.utc)
-        ages = {}
-        for t in tles:
-            try:
-                ages[int(t["line1"][2:7])] = engine.tle_age_info(t, ref)
-            except Exception:
-                continue          # malformed TLEs are already counted in objects_unpropagatable
-        staleness = engine.summarize_staleness(ages.values())
-        rank = {"fresh": 0, "stale": 1, "unreliable": 2}
-        unreliable_events = 0
-        for c in results:
-            worst = "fresh"
-            for key in ("object_1", "object_2"):
-                a = ages.get(c[key]["norad_id"])
-                if a:
-                    c[key]["tle_age_days"] = a["tle_age_days"]
-                    c[key]["tle_status"] = a["tle_status"]
-                    if rank[a["tle_status"]] > rank[worst]:
-                        worst = a["tle_status"]
-            c["tle_status"] = worst            # the weaker of the two TLEs
-            unreliable_events += worst == "unreliable"
+        staleness, unreliable_events = svc.annotate_tle_age(results, tles, ref)
         warnings = _warnings(staleness, out["objects_unpropagatable"], cache_meta)
         if unreliable_events:
-            warnings.append(f"{unreliable_events} conjunction(s) involve a TLE older than "
-                            f"{engine.UNRELIABLE_TLE_DAYS:g} days and may be spurious")
+            warnings.append(svc.unreliable_note(unreliable_events))
 
         return {
             "window_start_utc": ref.isoformat(),
