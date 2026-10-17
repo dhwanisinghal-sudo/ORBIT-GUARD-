@@ -1,8 +1,8 @@
 """
 OrbitGuard - authentication (registration + login)
 ---------------------------------------------------
-SQLite-backed user store, PBKDF2 password hashing (stdlib, no extra
-native deps) and JWT access tokens.
+User store (SQLite by default, Postgres via ORBITGUARD_DATABASE_URL; see db.py), PBKDF2
+password hashing (stdlib, no extra native deps) and JWT access tokens.
 
 Endpoints (wired up in main.py):
     POST /auth/register  -> create an account
@@ -23,7 +23,6 @@ import hmac
 import math
 import re
 import secrets
-import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -33,6 +32,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
 import config
+import db
 from ratelimit import SlidingWindowLimiter
 
 DB_PATH = config.DATA_DIR / "orbitguard_users.db"
@@ -76,21 +76,9 @@ def _too_many(retry_after: float, message: str) -> HTTPException:
 
 # ---------- database ----------
 
-def _get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH, timeout=10)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")    # off by default in SQLite; the watchlist FK needs it
-    conn.execute("PRAGMA journal_mode=WAL")   # readers don't block the writer under FastAPI's thread pool
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            email TEXT NOT NULL UNIQUE,
-            password_hash TEXT NOT NULL,
-            created_at TEXT NOT NULL
-        )
-    """)
-    return conn
+def _get_conn():
+    """Connection to the users database (tables are created on first use); close it when done."""
+    return db.connect("users", DB_PATH, dict_rows=True)
 
 
 # ---------- password hashing ----------
@@ -181,14 +169,14 @@ def register(body: RegisterRequest, request: Request):
     try:
         try:
             cur = conn.execute(
-                "INSERT INTO users (name, email, password_hash, created_at) VALUES (?, ?, ?, ?)",
+                "INSERT INTO users (name, email, password_hash, created_at) VALUES (?, ?, ?, ?) RETURNING id",
                 (body.name.strip(), email, hash_password(body.password),
                  datetime.now(timezone.utc).isoformat()),
             )
+            user_id = cur.fetchone()["id"]
             conn.commit()
-        except sqlite3.IntegrityError:
+        except db.IntegrityError:
             raise HTTPException(status.HTTP_409_CONFLICT, "An account with this email already exists")
-        user_id = cur.lastrowid
     finally:
         conn.close()
     return {

@@ -23,7 +23,8 @@ orbitguard/
 │   ├── geodetic.py       # TEME -> latitude / longitude / height (WGS-84)
 │   ├── ground_track.py   # Sub-satellite track over a time window
 │   ├── conjunction_window.py  # Time-window screening with time of closest approach (TCA)
-│   ├── cache.py          # SQLite TLE cache (groups + single objects)
+│   ├── db.py             # Database access: SQLite by default, Postgres when ORBITGUARD_DATABASE_URL is set
+│   ├── cache.py          # TLE cache (groups + single objects)
 │   ├── config.py         # Environment-variable settings, validated at startup
 │   ├── ratelimit.py      # In-memory rate limiter used by login/register
 │   ├── auth.py           # Registration, login, JWT auth
@@ -32,6 +33,8 @@ orbitguard/
 │   ├── alert_hub.py      # Background alert job, snapshot diffing and the /ws/alerts WebSocket
 │   ├── forecast_service.py  # Shared validation, TLE-age and error helpers for the forecast endpoints
 │   ├── ml_risk.py        # Random Forest risk scoring
+│   ├── validate_socrates.py  # Compare the ML model with a downloaded SOCRATES CSV
+│   ├── migrate_sqlite_to_postgres.py  # One-off copy of users + watchlists from SQLite to Postgres
 │   ├── fetch_and_propagate.py  # standalone CLI script (Day 1 prototype)
 │   ├── tests/            # pytest suite (offline; CelesTrak is mocked)
 │   ├── requirements.txt  # pinned runtime dependencies
@@ -113,7 +116,7 @@ Screening the catalog takes about 9 s, so polling `/watchlist/alerts` makes ever
 
 ### TLE caching and data freshness
 
-TLEs are cached in SQLite for 30 minutes, both per group and per object, so `/objects/{id}`, `/trajectory`, `/what-if` and `/watchlist?live=true` no longer hit CelesTrak on every call (a 20-satellite watchlist costs 0 requests on a warm cache and at most 20, fetched 4 at a time, on a cold one). If CelesTrak is unreachable, an expired copy up to 24 hours old is served instead of an error, and the response says so.
+TLEs are cached in the database (SQLite by default, Postgres if configured) for 30 minutes, both per group and per object, so `/objects/{id}`, `/trajectory`, `/what-if` and `/watchlist?live=true` no longer hit CelesTrak on every call (a 20-satellite watchlist costs 0 requests on a warm cache and at most 20, fetched 4 at a time, on a cold one). If CelesTrak is unreachable, an expired copy up to 24 hours old is served instead of an error, and the response says so.
 
 Nothing degrades silently. Every response carries:
 
@@ -134,17 +137,46 @@ Configuration is by environment variable (see `.env.example` and `config.py`); a
 | `ORBITGUARD_DEV=1` | Local development only: allows an insecure built-in secret, with a loud warning. |
 | `ORBITGUARD_CORS_ORIGINS` | Comma-separated frontend origins allowed to call the API from a browser. Default: the Vite dev server (`http://localhost:5173`, `http://127.0.0.1:5173`). |
 | `ORBITGUARD_DATA_DIR` | Where the SQLite databases and the ML model live (default: `backend/`). Mount a volume here when deploying. |
+| `ORBITGUARD_DATABASE_URL` | Optional. A Postgres URL (`postgresql://user:password@host:5432/dbname`) stores users, watchlists and the TLE cache there instead of in SQLite files. Unset = SQLite. See "Postgres" below. |
+| `ORBITGUARD_DB_POOL_SIZE` | Maximum Postgres connections this process holds (default 10, range 1 to 100). |
 | `ORBITGUARD_TRUST_PROXY=1` | Only behind exactly one reverse proxy that sets `X-Forwarded-For`; rate limits then use that address instead of the proxy's. |
 
 - **Rate limiting:** registration is limited to 10 attempts/hour per IP; login to 20 attempts/minute per IP and 5 *failed* attempts per 15 minutes per (IP, email) pair, during which even the right password is refused. Blocked requests get `429` with `Retry-After`. Counters are in memory, so they are per process and reset on restart.
 - **Passwords/timing:** login does the same password-hash work for unknown emails, so response time doesn't reveal which emails are registered.
-- **SQLite:** foreign keys are enforced (`PRAGMA foreign_keys=ON`) and WAL mode is on, so concurrent requests don't block each other.
+- **SQLite (default):** foreign keys are enforced (`PRAGMA foreign_keys=ON`) and WAL mode is on, so concurrent requests don't block each other.
 - **Startup:** the ML model is loaded (or trained) when the server starts, not during the first `?ml=true` request.
-- **Docker:** `docker compose up --build` after copying `.env.example` to `.env` and setting `ORBITGUARD_SECRET`. It runs **one** worker on purpose (in-memory rate limits, single SQLite file); moving to several workers means moving both to shared stores (Redis/Postgres).
+- **Docker:** `docker compose up --build` after copying `.env.example` to `.env` and setting `ORBITGUARD_SECRET`. It runs **one** worker on purpose: the rate-limit counters and the alert job's snapshots live in process memory, and Postgres does not change that (see "Postgres" below). For Postgres run `docker compose --profile postgres up --build` and set `POSTGRES_PASSWORD` and `ORBITGUARD_DATABASE_URL` in `.env` (the commented lines in `.env.example`).
+
+### Postgres (optional)
+
+By default everything is stored in SQLite files, which is fine for one server process. Set `ORBITGUARD_DATABASE_URL` to keep users, watchlists and the TLE cache in Postgres instead (managed database, backups, a database that outlives the container):
+
+```bash
+export ORBITGUARD_DATABASE_URL=postgresql://user:password@host:5432/orbitguard
+uvicorn main:app
+```
+
+- The tables are created on first use (a Postgres advisory lock keeps two starting processes from racing). There is nothing else to set up, and no ORM: `db.py` is the only place that knows which database is in use.
+- **Already have SQLite data?** Run `python migrate_sqlite_to_postgres.py` once (add `--dry-run` to preview, `--users-db PATH` for a non-default file). It copies users and watchlists with their ids, so existing login tokens keep working; the TLE cache is not copied because it refills by itself. It refuses to run when Postgres already has users or watchlist rows, and the SQLite file is only read.
+- **Tested on Postgres 16:** the whole test suite runs unchanged against it (`ORBITGUARD_DATABASE_URL=... python -m pytest tests -q`; the two SQLite-pragma tests are skipped), plus `tests/test_step10_postgres.py` for the Postgres-only behaviour (foreign keys, duplicate keys, upserts, pool reuse after a failed statement, the migration). `docker-compose.yml` was validated with `docker compose config`; the container build itself was not run in that environment.
+- **This does not make several workers safe on its own.** The login/register rate limits and the alert job (its snapshots and the `/ws/alerts` connections) are still in process memory, so keep one worker. Running more than one needs those moved to a shared store first (see the roadmap).
 
 ### ML risk scoring
 
 A Random Forest classifier scores each conjunction (LOW / MEDIUM / HIGH) from distance, relative velocity, mean altitude and altitude gap. **Note:** there is no public dataset of real collision outcomes, so the model is trained on synthetic labels from a physics-inspired formula plus noise. It is a scoring framework ready to be retrained on real conjunction data (e.g. CDMs), not a validated collision predictor. Run `python ml_risk.py` to retrain; `/model-info` reports the metrics.
+
+#### Checking the model against SOCRATES
+
+`validate_socrates.py` compares the model with CelesTrak's [SOCRATES](https://celestrak.org/SOCRATES) conjunction screening, which lists real close approaches with a miss distance, relative speed and `MAX_PROB` (an upper-bound collision probability). Download a SOCRATES result as CSV on a machine that can reach CelesTrak (column layout: [format page](https://www.celestrak.org/SOCRATES/socrates-format.php)), then:
+
+```bash
+python validate_socrates.py socrates.csv --out report.json --rows-out rows.csv
+python validate_socrates.py socrates.csv --no-tle-lookup      # offline: altitudes fall back to 500 km
+```
+
+SOCRATES has no altitudes, so the script fetches both objects' TLEs and propagates them to the time of closest approach. `MAX_PROB` becomes reference labels (HIGH at 1e-4 or more, MEDIUM at 1e-5 or more; change with `--high-pc` / `--medium-pc`). The report gives accuracy and a confusion matrix for the model and for the old distance-only rule, the Spearman correlation of the ML score with `log10(MAX_PROB)` next to the correlation of miss distance alone (the baseline the model has to beat), AUC, and the `MAX_PROB` range inside each predicted class.
+
+What it cannot tell you: `MAX_PROB` is a conservative screening estimate, not a collision record; SOCRATES only lists events within 5 km; and the SOCRATES pages do not state units, so the script assumes km and km/s and warns when the numbers look like metres (`--range-unit m`, `--speed-unit m/s`). The script was tested offline on a made-up fixture in the documented layout; **no real SOCRATES file has been run through it yet**, so there is no result to quote.
 
 ### Authentication
 
@@ -152,7 +184,7 @@ Passwords are hashed with PBKDF2-SHA256 and sessions use JWT. Set the `ORBITGUAR
 
 ### Tech
 
-Python, FastAPI, scikit-learn, PyJWT, [sgp4](https://pypi.org/project/sgp4/), scipy (KDTree), SQLite.
+Python, FastAPI, scikit-learn, PyJWT, [sgp4](https://pypi.org/project/sgp4/), scipy (KDTree), SQLite or Postgres (psycopg).
 
 ## Frontend
 
@@ -173,11 +205,14 @@ The backend has been tested against live CelesTrak data — e.g. the ISS reliabl
 
 ## Roadmap
 
-- [ ] Scale to 100+ tracked objects (currently tested with ~10–20)
-- [ ] Migrate SQLite cache to Postgres
+- [x] Scale to 100+ tracked objects (KDTree screening; tested on a 7,000-object synthetic catalog)
+- [x] Optional Postgres storage for users, watchlists and the TLE cache (`ORBITGUARD_DATABASE_URL`; see "Postgres")
+- [ ] Share rate limits and the alert job's state across workers (needed before running more than one worker)
 - [x] WebSocket push instead of polling (precomputed by a background job; see "Live alerts")
 - [x] ML-based risk scoring (Random Forest) alongside the current rule-based system
 - [x] User registration, login and per-user watchlist
+- [x] Script to compare the ML model with SOCRATES (`validate_socrates.py`)
+- [ ] Run that comparison on a real SOCRATES download and record the result
 - [ ] Retrain ML model on real conjunction data
 
 ## Contributors

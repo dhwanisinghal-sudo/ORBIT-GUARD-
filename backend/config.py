@@ -13,6 +13,10 @@ at import time so a bad setup fails at startup instead of on the first request.
                              http://127.0.0.1:5173).
     ORBITGUARD_DATA_DIR      where the SQLite databases and the ML model are stored
                              (default: this folder). Point it at a volume when deploying.
+    ORBITGUARD_DATABASE_URL  optional. A Postgres URL (postgresql://user:password@host:5432/dbname)
+                             stores users, watchlists and the TLE cache there instead of in SQLite
+                             files. Unset = SQLite (the default).
+    ORBITGUARD_DB_POOL_SIZE  maximum Postgres connections held by this process (default 10).
     ORBITGUARD_TRUST_PROXY   set to 1 only when running behind exactly one reverse proxy
                              that sets X-Forwarded-For; used for per-client rate limits.
     ORBITGUARD_ALERT_JOB     1 (default) runs the background job that precomputes watchlist
@@ -99,7 +103,33 @@ def trust_proxy(env=os.environ) -> bool:
     return _flag(env.get("ORBITGUARD_TRUST_PROXY"))
 
 
+def database_url(env=os.environ) -> str | None:
+    """Postgres URL from ORBITGUARD_DATABASE_URL, or None to use SQLite. Validated at startup."""
+    raw = (env.get("ORBITGUARD_DATABASE_URL") or "").strip()
+    if not raw:
+        return None
+    if urlparse(raw).scheme not in ("postgresql", "postgres"):
+        raise RuntimeError("ORBITGUARD_DATABASE_URL must be a Postgres URL such as "
+                           "postgresql://user:password@host:5432/dbname (leave it unset to use SQLite).")
+    return raw
+
+
+def db_pool_size(env=os.environ) -> int:
+    raw = (env.get("ORBITGUARD_DB_POOL_SIZE") or "").strip()
+    if not raw:
+        return 10
+    try:
+        value = int(raw)
+    except ValueError:
+        raise RuntimeError(f"ORBITGUARD_DB_POOL_SIZE={raw!r} is not a whole number")
+    if not (1 <= value <= 100):
+        raise RuntimeError(f"ORBITGUARD_DB_POOL_SIZE={raw} is out of range (1 to 100)")
+    return value
+
+
 DATA_DIR = data_dir()
+DATABASE_URL = database_url()
+DB_POOL_SIZE = db_pool_size()
 CORS_ORIGINS = parse_cors_origins()
 TRUST_PROXY = trust_proxy()
 

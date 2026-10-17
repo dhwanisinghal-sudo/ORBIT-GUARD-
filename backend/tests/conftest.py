@@ -9,6 +9,7 @@ import pytest
 import alert_hub
 import auth
 import cache
+import db
 import watchlist
 
 
@@ -20,3 +21,10 @@ def isolated_state(tmp_path, monkeypatch):
     auth.reset_rate_limits()
     watchlist.reset_rate_limits()
     alert_hub.reset_rate_limits()
+
+    if db.is_postgres():
+        # Postgres is one shared database (not a fresh temp file per test), so empty it instead.
+        conn = db.connect("users", None)
+        conn.execute("TRUNCATE users, watchlist, tle_cache, tle_single_cache RESTART IDENTITY CASCADE")
+        conn.commit()
+        conn.close()

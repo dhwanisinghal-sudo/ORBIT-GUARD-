@@ -32,6 +32,7 @@ import forecast_service as svc
 import ground_track as gt
 import maneuver
 import alert_hub
+import db
 
 log = logging.getLogger("uvicorn.error")   # so startup messages show in uvicorn's console output
 
@@ -49,6 +50,7 @@ async def lifespan(_app: FastAPI):
         yield
     finally:
         await alert_hub.hub.stop()
+        db.close_pool()      # no-op unless Postgres is in use
 
 
 app = FastAPI(title="OrbitGuard API", version="0.5.0", lifespan=lifespan)

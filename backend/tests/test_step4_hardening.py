@@ -15,6 +15,7 @@ sys.path.insert(0, str(BACKEND))
 import auth
 import cache
 import config
+import db
 import main
 import ml_risk
 import watchlist
@@ -227,6 +228,11 @@ def test_normal_login_still_works(client):
 
 
 # ======================= SQLite pragmas =======================
+# (Postgres equivalents live in test_step10_postgres.py)
+needs_sqlite = pytest.mark.skipif(db.is_postgres(), reason="SQLite-specific; Postgres runs test_step10_postgres.py")
+
+
+@needs_sqlite
 def test_foreign_keys_are_enforced():
     conn = auth._get_conn()
     assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
@@ -236,6 +242,7 @@ def test_foreign_keys_are_enforced():
     conn.close(); wconn.close()
 
 
+@needs_sqlite
 def test_wal_mode_on_both_databases():
     a, c = auth._get_conn(), cache._get_conn()
     assert a.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"

@@ -1,6 +1,6 @@
 """
-OrbitGuard - SQLite TLE cache
-------------------------------
+OrbitGuard - TLE cache (SQLite by default, Postgres via ORBITGUARD_DATABASE_URL)
+---------------------------------------------------------------------------------
 Caches fetched TLEs on disk so repeated requests don't re-hit CelesTrak
 (which rate-limits clients that ask for the same data too often).
 
@@ -21,7 +21,6 @@ Every read can also return metadata describing where the data came from:
 
 import json
 import logging
-import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -29,6 +28,7 @@ from datetime import datetime, timezone
 import requests
 
 import config
+import db
 
 log = logging.getLogger("orbitguard.cache")
 
@@ -39,23 +39,8 @@ FETCH_WORKERS = 4                       # parallel single-object fetches (be pol
 
 
 def _get_conn():
-    conn = sqlite3.connect(DB_PATH, timeout=10)
-    conn.execute("PRAGMA journal_mode=WAL")   # concurrent requests: readers don't block the writer
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS tle_cache (
-            group_name TEXT PRIMARY KEY,
-            tles_json TEXT NOT NULL,
-            fetched_at REAL NOT NULL
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS tle_single_cache (
-            norad_id INTEGER PRIMARY KEY,
-            tle_json TEXT NOT NULL,
-            fetched_at REAL NOT NULL
-        )
-    """)
-    return conn
+    """Connection to the cache database (tables are created on first use); close it when done."""
+    return db.connect("cache", DB_PATH)
 
 
 def _meta(source: str, fetched_at: float) -> dict:
@@ -72,7 +57,7 @@ def _meta(source: str, fetched_at: float) -> dict:
 def get_tles(group: str, fetch_fn, limit: int | None = None, force_refresh: bool = False,
              return_meta: bool = False):
     """
-    Return TLEs for a group, using the SQLite cache when it's still fresh.
+    Return TLEs for a group, using the cache when it's still fresh.
 
     The cache always stores the FULL group; `limit` is applied only when
     returning results. (Caching a limited fetch would make a later, larger
@@ -89,31 +74,37 @@ def get_tles(group: str, fetch_fn, limit: int | None = None, force_refresh: bool
         row = conn.execute(
             "SELECT tles_json, fetched_at FROM tle_cache WHERE group_name = ?", (group,)
         ).fetchone()
-        now = time.time()
+    finally:
+        conn.close()      # not held open while CelesTrak answers (a pooled Postgres connection would sit idle)
+    now = time.time()
 
-        if row and not force_refresh and now - row[1] < CACHE_TTL_SECONDS:
-            tles, fetched_at, source = json.loads(row[0]), row[1], "cache"
-        else:
-            try:
-                tles = fetch_fn(group=group, limit=None)   # whole group, never a truncated one
-            except requests.RequestException as exc:
-                if row and now - row[1] < MAX_STALE_SERVE_SECONDS:
-                    log.warning("CelesTrak unreachable for group %s (%s); serving cached copy", group, exc)
-                    tles, fetched_at, source = json.loads(row[0]), row[1], "stale_cache"
-                else:
-                    raise
+    if row and not force_refresh and now - row[1] < CACHE_TTL_SECONDS:
+        tles, fetched_at, source = json.loads(row[0]), row[1], "cache"
+    else:
+        try:
+            tles = fetch_fn(group=group, limit=None)   # whole group, never a truncated one
+        except requests.RequestException as exc:
+            if row and now - row[1] < MAX_STALE_SERVE_SECONDS:
+                log.warning("CelesTrak unreachable for group %s (%s); serving cached copy", group, exc)
+                tles, fetched_at, source = json.loads(row[0]), row[1], "stale_cache"
             else:
-                fetched_at, source = time.time(), "upstream"
+                raise
+        else:
+            fetched_at, source = time.time(), "upstream"
+            conn = _get_conn()
+            try:
                 conn.execute(
-                    "INSERT OR REPLACE INTO tle_cache (group_name, tles_json, fetched_at) VALUES (?, ?, ?)",
+                    "INSERT INTO tle_cache (group_name, tles_json, fetched_at) VALUES (?, ?, ?) "
+                    "ON CONFLICT (group_name) DO UPDATE SET "
+                    "tles_json = excluded.tles_json, fetched_at = excluded.fetched_at",
                     (group, json.dumps(tles), fetched_at),
                 )
                 conn.commit()
+            finally:
+                conn.close()
 
-        out = tles[:limit] if limit else tles
-        return (out, _meta(source, fetched_at)) if return_meta else out
-    finally:
-        conn.close()
+    out = tles[:limit] if limit else tles
+    return (out, _meta(source, fetched_at)) if return_meta else out
 
 
 # ----------------------------------------------------------------------------
@@ -189,7 +180,9 @@ def get_tles_by_ids(norad_ids, fetch_fn, force_refresh: bool = False):
         conn = _get_conn()
         try:
             conn.executemany(
-                "INSERT OR REPLACE INTO tle_single_cache (norad_id, tle_json, fetched_at) VALUES (?, ?, ?)",
+                "INSERT INTO tle_single_cache (norad_id, tle_json, fetched_at) VALUES (?, ?, ?) "
+                "ON CONFLICT (norad_id) DO UPDATE SET "
+                "tle_json = excluded.tle_json, fetched_at = excluded.fetched_at",
                 to_store,
             )
             conn.commit()

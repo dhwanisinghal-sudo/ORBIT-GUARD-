@@ -13,7 +13,6 @@ Endpoints (wired up in main.py):
     (live push of the same feed: WebSocket /ws/alerts, see alert_hub.py)
 """
 
-import sqlite3
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -24,6 +23,7 @@ import alert_hub
 import alert_service
 import auth
 import cache
+import db
 import forecast_service as svc
 import orbit_engine as engine
 from ratelimit import SlidingWindowLimiter
@@ -39,19 +39,8 @@ def reset_rate_limits() -> None:
     _alerts_limiter.reset()
 
 
-def _conn() -> sqlite3.Connection:
-    conn = auth._get_conn()  # same database file as the users table
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS watchlist (
-            user_id INTEGER NOT NULL,
-            norad_id INTEGER NOT NULL,
-            name TEXT,
-            added_at TEXT NOT NULL,
-            PRIMARY KEY (user_id, norad_id),
-            FOREIGN KEY (user_id) REFERENCES users(id)
-        )
-    """)
-    return conn
+def _conn():
+    return auth._get_conn()  # same database as the users table (the watchlist table is created with it)
 
 
 class WatchlistAdd(BaseModel):
@@ -70,8 +59,8 @@ def add_to_watchlist(body: WatchlistAdd, user: dict = Depends(auth.get_current_u
                  datetime.now(timezone.utc).isoformat()),
             )
             conn.commit()
-        except sqlite3.IntegrityError as exc:
-            if "FOREIGN KEY" in str(exc):   # enforced now that PRAGMA foreign_keys=ON
+        except db.IntegrityError as exc:
+            if db.is_foreign_key_violation(exc):   # the user row is gone (foreign keys are enforced)
                 raise HTTPException(status.HTTP_401_UNAUTHORIZED, "User no longer exists")
             raise HTTPException(status.HTTP_409_CONFLICT, "Already in your watchlist")
     finally:
