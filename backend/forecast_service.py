@@ -79,6 +79,16 @@ def validate_window_params(hours: float, threshold_km: float, step_seconds: floa
         raise HTTPException(status_code=400, detail="start must be ISO-8601, e.g. 2026-10-17T12:00:00Z")
 
 
+def parse_start(start: str | None):
+    """ISO-8601 start time -> aware datetime (None stays None). Raises HTTP 400 if unparseable."""
+    if not start:
+        return None
+    try:
+        return datetime.fromisoformat(start.replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="start must be ISO-8601, e.g. 2026-10-17T12:00:00Z")
+
+
 def check_work(n_objects: int, hours: float, step_seconds: float, limit: int | None = None) -> int:
     """Refuse requests whose objects x time steps would exhaust memory. Returns the step count."""
     limit = MAX_FORECAST_WORK if limit is None else limit     # read at call time, not definition time

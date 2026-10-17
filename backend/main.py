@@ -29,6 +29,7 @@ import config
 import ml_risk
 import watchlist
 import forecast_service as svc
+import maneuver
 
 log = logging.getLogger("uvicorn.error")   # so startup messages show in uvicorn's console output
 
@@ -339,34 +340,65 @@ def forecast_conjunctions(
 def what_if_maneuver(
     norad_id: int,
     other_norad_id: int,
-    altitude_delta_km: float,
+    dv_along_ms: float = 0.0,
+    dv_radial_ms: float = 0.0,
+    dv_cross_ms: float = 0.0,
+    burn_in_hours: float = 0.0,
+    window_hours: float = 24.0,
+    step_seconds: float = 20.0,
+    start: str | None = None,
+    altitude_delta_km: float | None = None,
 ):
     """
-    What-if maneuver simulator (Week 7 - the "wow feature").
-
-    Simulates shifting one object's altitude and shows how the predicted
-    distance to another object changes as a result.
+    What-if maneuver simulator: applies an impulsive burn to one object, re-propagates it and
+    reports how the time of closest approach (TCA) and miss distance to another object change.
 
     Query params:
-      norad_id: the object being maneuvered (altitude adjusted)
-      other_norad_id: the object it's being compared against
-      altitude_delta_km: how much to shift altitude (+outward, -inward)
+      norad_id: the object that burns
+      other_norad_id: the object it is compared against
+      dv_along_ms / dv_radial_ms / dv_cross_ms: delta-v in m/s in the object's RTN frame
+          (+along-track = prograde, +radial = away from Earth, +cross = along the orbit normal)
+      burn_in_hours: how long after `start` the burn happens (default 0)
+      window_hours: how long after the burn the pair is screened (burn_in + window <= 72 h)
+      step_seconds: coarse screening grid, 5-120 s (default 20)
+      start: ISO-8601 UTC start time (default: now)
+      altitude_delta_km: DEPRECATED. Converted to the along-track burn that changes the
+          semi-major axis by this amount. Cannot be combined with the dv_* parameters.
+
+    The "before" numbers are plain SGP4. The "after" numbers add the effect of the burn,
+    computed with a two-body + J2 integrator (no drag/SRP in that difference).
     """
+    if altitude_delta_km is not None and (dv_along_ms or dv_radial_ms or dv_cross_ms):
+        raise HTTPException(status_code=400,
+                            detail="use either altitude_delta_km (deprecated) or the dv_* parameters, not both")
+    start_dt = svc.parse_start(start)
     try:
         tles, metas = _get_tles_by_ids([norad_id, other_norad_id])
-        obj_a = engine.propagate(tles[norad_id])
-        obj_b = engine.propagate(tles[other_norad_id])
-
-        result = conj.simulate_altitude_adjustment(obj_a, obj_b, altitude_delta_km)
-        warnings = [f"{o['name']}: {o['tle_warning']}" for o in (obj_a, obj_b) if o.get("tle_warning")]
-        for m in metas.values():
-            warnings += _warnings(cache_meta=m)
+        result = maneuver.analyze_maneuver(
+            tles[norad_id], tles[other_norad_id],
+            dv_radial_ms=dv_radial_ms, dv_along_ms=dv_along_ms, dv_cross_ms=dv_cross_ms,
+            altitude_delta_km=altitude_delta_km,
+            burn_in_hours=burn_in_hours, window_hours=window_hours,
+            start=start_dt, step_seconds=step_seconds,
+        )
+        ref = start_dt or datetime.now(timezone.utc)
+        objs = []
+        warnings = []
+        for nid in (norad_id, other_norad_id):
+            t = tles[nid]
+            age = engine.tle_age_info(t, ref)
+            objs.append({"name": t["name"], "norad_id": int(t["line1"][2:7]),
+                         "tle_age_days": age["tle_age_days"], "tle_status": age["tle_status"]})
+            if age.get("tle_warning"):
+                warnings.append(f"{t['name']}: {age['tle_warning']}")
+        for meta in metas.values():
+            warnings += _warnings(cache_meta=meta)
+        warnings += result["notes"]
         return {
-            "object_1": {"name": obj_a["name"], "norad_id": obj_a["norad_id"],
-                         "tle_age_days": obj_a["tle_age_days"], "tle_status": obj_a["tle_status"]},
-            "object_2": {"name": obj_b["name"], "norad_id": obj_b["norad_id"],
-                         "tle_age_days": obj_b["tle_age_days"], "tle_status": obj_b["tle_status"]},
-            **result,
+            "object_1": objs[0],
+            "object_2": objs[1],
+            **{k: v for k, v in result.items() if k not in ("notes", "deprecation")},
+            **({"deprecation": result["deprecation"]} if result["deprecation"] else {}),
             "warnings": list(dict.fromkeys(warnings)),
         }
     except Exception as exc:

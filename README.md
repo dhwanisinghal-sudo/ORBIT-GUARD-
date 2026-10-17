@@ -18,7 +18,8 @@ orbitguard/
 ├── backend/              # Python + FastAPI backend
 │   ├── main.py           # API endpoints
 │   ├── orbit_engine.py   # CelesTrak fetch + SGP4 propagation
-│   ├── conjunction.py    # Conjunction detection (snapshot) + what-if simulator
+│   ├── conjunction.py    # Conjunction detection (snapshot)
+│   ├── maneuver.py       # What-if maneuver: delta-v -> re-propagate -> new TCA / miss distance
 │   ├── conjunction_window.py  # Time-window screening with time of closest approach (TCA)
 │   ├── cache.py          # SQLite TLE cache (groups + single objects)
 │   ├── config.py         # Environment-variable settings, validated at startup
@@ -71,7 +72,7 @@ API docs available at `http://127.0.0.1:8000/docs` once running.
 | `GET /conjunctions` | Detected close approaches with risk levels (`?threshold_km=`, `?method=kdtree\|naive`; `kdtree` is the default and handles the full `active` catalog in milliseconds, `naive` is the O(n²) reference and is refused above 1,500 objects) |
 | `GET /conjunctions/forecast` | Screens the next `?hours=` (max 72) and returns each close approach with its **time of closest approach (TCA)**, miss distance and relative speed (`?threshold_km=`, `?step_seconds=`, `?start=`, `?include_coorbiting=`, `?ml=true`) |
 | `GET /trajectory/{norad_id}` | Predicted future positions (`?hours=0,1,6,12,24,48`) |
-| `GET /what-if` | Simulates an altitude adjustment and shows before/after risk (`?norad_id=&other_norad_id=&altitude_delta_km=`) |
+| `GET /what-if` | Real maneuver analysis: applies an impulsive burn to `norad_id` (`?dv_along_ms=`, `?dv_radial_ms=`, `?dv_cross_ms=` in its RTN frame, at `?burn_in_hours=`), re-propagates, and reports the closest approach to `other_norad_id` before and after (`?window_hours=`, `?step_seconds=`, `?start=`). `altitude_delta_km` still works but is deprecated (converted to the equivalent along-track burn) |
 | `GET /cache-status` | Shows cache freshness for a group (`?group=`) or a single object (`?norad_id=`) |
 | `GET /model-info` | ML risk model accuracy, per-class metrics, feature importance |
 | `GET /risk-score` | ML risk score for a hypothetical close approach (`?distance_km=&relative_velocity_km_s=&altitude_km=`) |
@@ -145,7 +146,7 @@ npm run dev
 
 ## Verified with real data
 
-The backend has been tested against live CelesTrak data — e.g. the ISS reliably returns an altitude in the ~400–430 km range, matching its known real-world orbit. The what-if simulator has been verified to correctly reduce a conjunction's risk level when a sufficient altitude adjustment is applied.
+The backend has been tested against live CelesTrak data — e.g. the ISS reliably returns an altitude in the ~400–430 km range, matching its known real-world orbit. The what-if maneuver numerics are checked in the test suite against the Clohessy–Wiltshire relative-motion solution (within 2% over three orbits); the "before" numbers are plain SGP4, and the burn's effect is added as the difference of two identical J2 integrations. It is an impulsive-burn screening aid: no drag or solar-pressure difference, and SGP4's own TLE-age error applies.
 
 ## Roadmap
 

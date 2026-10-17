@@ -49,13 +49,15 @@ export async function getConjunctions(
 
   return response.json();
 }
+// Applies an along-track burn (m/s, + = prograde) to `noradId` and returns the new
+// closest approach to `otherNoradId`. Radial / cross-track burns: add dv_radial_ms / dv_cross_ms.
 export async function getWhatIf(
   noradId,
   otherNoradId,
-  altitudeDeltaKm = 10
+  dvAlongMs = 1
 ) {
   const response = await fetch(
-    `${API_BASE}/what-if?norad_id=${noradId}&other_norad_id=${otherNoradId}&altitude_delta_km=${altitudeDeltaKm}`
+    `${API_BASE}/what-if?norad_id=${noradId}&other_norad_id=${otherNoradId}&dv_along_ms=${dvAlongMs}`
   );
 
   if (!response.ok) {
