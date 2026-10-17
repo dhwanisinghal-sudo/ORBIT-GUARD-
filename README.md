@@ -20,11 +20,18 @@ orbitguard/
 │   ├── orbit_engine.py   # CelesTrak fetch + SGP4 propagation
 │   ├── conjunction.py    # Conjunction detection (snapshot) + what-if simulator
 │   ├── conjunction_window.py  # Time-window screening with time of closest approach (TCA)
-│   ├── cache.py          # SQLite caching layer
+│   ├── cache.py          # SQLite TLE cache (groups + single objects)
+│   ├── config.py         # Environment-variable settings, validated at startup
+│   ├── ratelimit.py      # In-memory rate limiter used by login/register
 │   ├── auth.py           # Registration, login, JWT auth
 │   ├── watchlist.py      # Per-user satellite watchlist
 │   ├── ml_risk.py        # Random Forest risk scoring
-│   └── fetch_and_propagate.py  # standalone CLI script (Day 1 prototype)
+│   ├── fetch_and_propagate.py  # standalone CLI script (Day 1 prototype)
+│   ├── tests/            # pytest suite (offline; CelesTrak is mocked)
+│   ├── requirements.txt  # pinned runtime dependencies
+│   └── Dockerfile
+├── docker-compose.yml
+├── .env.example
 ├── frontend/             # React + Three.js dashboard
 └── index.html            # Standalone single-file dashboard (no build step needed)
 ```
@@ -40,8 +47,17 @@ venv\Scripts\activate        # Windows
 # source venv/bin/activate   # macOS/Linux
 
 pip install -r requirements.txt
+
+# The API refuses to start without a JWT secret (>= 32 characters). Generate and set one:
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+set ORBITGUARD_SECRET=<paste it here>          # Windows cmd
+# export ORBITGUARD_SECRET=<paste it here>     # macOS/Linux
+# (local development only: set ORBITGUARD_DEV=1 instead to use an insecure built-in secret)
+
 uvicorn main:app --reload
 ```
+
+Run the tests with `pip install -r requirements-dev.txt` and `python -m pytest tests -q`. Dependencies are pinned to the versions the tests pass on (Python 3.12).
 
 API docs available at `http://127.0.0.1:8000/docs` once running.
 
@@ -82,6 +98,24 @@ Nothing degrades silently. Every response carries:
 
 `/objects` `count` is the number of objects actually returned; `requested` is how many TLEs were fetched. A non-positive `limit` is rejected with 400.
 
+### Security and deployment
+
+Configuration is by environment variable (see `.env.example` and `config.py`); a bad setup stops the app at startup instead of failing later.
+
+| Variable | Purpose |
+|---|---|
+| `ORBITGUARD_SECRET` | **Required.** JWT signing key, 32+ characters. The app refuses to start without it (or with the old `dev-only-change-me` default). |
+| `ORBITGUARD_DEV=1` | Local development only: allows an insecure built-in secret, with a loud warning. |
+| `ORBITGUARD_CORS_ORIGINS` | Comma-separated frontend origins allowed to call the API from a browser. Default: the Vite dev server (`http://localhost:5173`, `http://127.0.0.1:5173`). |
+| `ORBITGUARD_DATA_DIR` | Where the SQLite databases and the ML model live (default: `backend/`). Mount a volume here when deploying. |
+| `ORBITGUARD_TRUST_PROXY=1` | Only behind exactly one reverse proxy that sets `X-Forwarded-For`; rate limits then use that address instead of the proxy's. |
+
+- **Rate limiting:** registration is limited to 10 attempts/hour per IP; login to 20 attempts/minute per IP and 5 *failed* attempts per 15 minutes per (IP, email) pair, during which even the right password is refused. Blocked requests get `429` with `Retry-After`. Counters are in memory, so they are per process and reset on restart.
+- **Passwords/timing:** login does the same password-hash work for unknown emails, so response time doesn't reveal which emails are registered.
+- **SQLite:** foreign keys are enforced (`PRAGMA foreign_keys=ON`) and WAL mode is on, so concurrent requests don't block each other.
+- **Startup:** the ML model is loaded (or trained) when the server starts, not during the first `?ml=true` request.
+- **Docker:** `docker compose up --build` after copying `.env.example` to `.env` and setting `ORBITGUARD_SECRET`. It runs **one** worker on purpose (in-memory rate limits, single SQLite file); moving to several workers means moving both to shared stores (Redis/Postgres).
+
 ### ML risk scoring
 
 A Random Forest classifier scores each conjunction (LOW / MEDIUM / HIGH) from distance, relative velocity, mean altitude and altitude gap. **Note:** there is no public dataset of real collision outcomes, so the model is trained on synthetic labels from a physics-inspired formula plus noise. It is a scoring framework ready to be retrained on real conjunction data (e.g. CDMs), not a validated collision predictor. Run `python ml_risk.py` to retrain; `/model-info` reports the metrics.
@@ -92,7 +126,7 @@ Passwords are hashed with PBKDF2-SHA256 and sessions use JWT. Set the `ORBITGUAR
 
 ### Tech
 
-Python, FastAPI, scikit-learn, PyJWT, [sgp4](https://pypi.org/project/sgp4/), [skyfield](https://rhodesmill.org/skyfield/), scipy (KDTree), SQLite.
+Python, FastAPI, scikit-learn, PyJWT, [sgp4](https://pypi.org/project/sgp4/), scipy (KDTree), SQLite.
 
 ## Frontend
 

@@ -11,6 +11,9 @@ frontend teammate without them needing to read your code).
 See README.md for the full endpoint list, or open /docs when running.
 """
 
+import logging
+import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 import requests
@@ -22,20 +25,34 @@ import conjunction as conj
 import conjunction_window as conjw
 import cache
 import auth
+import config
 import ml_risk
 import watchlist
 
-app = FastAPI(title="OrbitGuard API", version="0.3.0")
+log = logging.getLogger("uvicorn.error")   # so startup messages show in uvicorn's console output
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Startup: load (or train) the ML model now rather than during the first ?ml=true request."""
+    started = time.perf_counter()
+    ml_risk.warm_up()
+    log.info("ML risk model ready in %.1f s", time.perf_counter() - started)
+    yield
+
+
+app = FastAPI(title="OrbitGuard API", version="0.4.0", lifespan=lifespan)
 app.include_router(auth.router)
 app.include_router(watchlist.router)
 
-# Allow the React dev server (usually localhost:5173 for Vite) to call this
-# API from the browser. Tighten this once you deploy for real.
+# Only the configured frontend origins may call this API from a browser
+# (ORBITGUARD_CORS_ORIGINS; default: the Vite dev server). Auth uses a bearer token
+# header, not cookies, so credentials are not allowed cross-origin.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=config.CORS_ORIGINS,
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 

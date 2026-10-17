@@ -25,20 +25,22 @@ import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from pathlib import Path
 
 import requests
 
+import config
+
 log = logging.getLogger("orbitguard.cache")
 
-DB_PATH = Path(__file__).parent / "orbitguard_cache.db"
+DB_PATH = config.DATA_DIR / "orbitguard_cache.db"
 CACHE_TTL_SECONDS = 60 * 30            # CelesTrak refreshes element sets roughly every 2 h
 MAX_STALE_SERVE_SECONDS = 60 * 60 * 24  # never serve an expired copy older than a day
 FETCH_WORKERS = 4                       # parallel single-object fetches (be polite to CelesTrak)
 
 
 def _get_conn():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn.execute("PRAGMA journal_mode=WAL")   # concurrent requests: readers don't block the writer
     conn.execute("""
         CREATE TABLE IF NOT EXISTS tle_cache (
             group_name TEXT PRIMARY KEY,

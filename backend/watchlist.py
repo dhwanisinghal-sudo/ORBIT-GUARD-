@@ -54,7 +54,9 @@ def add_to_watchlist(body: WatchlistAdd, user: dict = Depends(auth.get_current_u
                  datetime.now(timezone.utc).isoformat()),
             )
             conn.commit()
-        except sqlite3.IntegrityError:
+        except sqlite3.IntegrityError as exc:
+            if "FOREIGN KEY" in str(exc):   # enforced now that PRAGMA foreign_keys=ON
+                raise HTTPException(status.HTTP_401_UNAUTHORIZED, "User no longer exists")
             raise HTTPException(status.HTTP_409_CONFLICT, "Already in your watchlist")
     finally:
         conn.close()

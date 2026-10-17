@@ -1,0 +1,13 @@
+# Run the API:   copy .env.example to .env, set ORBITGUARD_SECRET, then   docker compose up --build
+services:
+  api:
+    build: ./backend
+    env_file: .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - orbitguard_data:/data      # databases + ML model survive restarts
+    restart: unless-stopped
+
+volumes:
+  orbitguard_data:
