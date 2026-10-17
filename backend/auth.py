@@ -128,12 +128,10 @@ def create_token(user_id: int, email: str) -> str:
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
 
-def get_current_user(creds: HTTPAuthorizationCredentials | None = Depends(_bearer)) -> dict:
-    """Dependency: use on any endpoint that should require login."""
-    if creds is None:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Not authenticated")
+def user_from_token(token: str) -> tuple[dict, int]:
+    """Validate a JWT and return (user row, expiry as a unix timestamp). Raises HTTP 401."""
     try:
-        payload = jwt.decode(creds.credentials, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
     except jwt.PyJWTError:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token")
     conn = _get_conn()
@@ -146,7 +144,14 @@ def get_current_user(creds: HTTPAuthorizationCredentials | None = Depends(_beare
         conn.close()
     if row is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "User no longer exists")
-    return dict(row)
+    return dict(row), int(payload["exp"])
+
+
+def get_current_user(creds: HTTPAuthorizationCredentials | None = Depends(_bearer)) -> dict:
+    """Dependency: use on any endpoint that should require login."""
+    if creds is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Not authenticated")
+    return user_from_token(creds.credentials)[0]
 
 
 # ---------- schemas ----------

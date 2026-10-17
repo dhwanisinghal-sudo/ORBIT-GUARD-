@@ -6,6 +6,7 @@ os.environ.setdefault("ORBITGUARD_SECRET", "test-only-secret-" + "x" * 32)
 
 import pytest
 
+import alert_hub
 import auth
 import cache
 import watchlist
@@ -18,3 +19,4 @@ def isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(auth, "DB_PATH", tmp_path / "users.db")
     auth.reset_rate_limits()
     watchlist.reset_rate_limits()
+    alert_hub.reset_rate_limits()

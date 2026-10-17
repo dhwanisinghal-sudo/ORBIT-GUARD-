@@ -28,6 +28,8 @@ orbitguard/
 │   ├── ratelimit.py      # In-memory rate limiter used by login/register
 │   ├── auth.py           # Registration, login, JWT auth
 │   ├── watchlist.py      # Per-user satellite watchlist + conjunction alerts
+│   ├── alert_service.py  # Watchlist screening (one pass for many users) shared by REST and the job
+│   ├── alert_hub.py      # Background alert job, snapshot diffing and the /ws/alerts WebSocket
 │   ├── forecast_service.py  # Shared validation, TLE-age and error helpers for the forecast endpoints
 │   ├── ml_risk.py        # Random Forest risk scoring
 │   ├── fetch_and_propagate.py  # standalone CLI script (Day 1 prototype)
@@ -86,10 +88,28 @@ API docs available at `http://127.0.0.1:8000/docs` once running.
 | `GET /watchlist` | List your watchlist (`?live=true` adds current positions) |
 | `DELETE /watchlist/{norad_id}` | Remove a satellite from your watchlist |
 | `GET /watchlist/alerts` | Upcoming close approaches (with TCA) involving your saved satellites (auth required; same params as `/conjunctions/forecast`, default `group=active`; limited to 6 calls/min per user) |
+| `GET /watchlist/alerts/latest` | The same feed, **precomputed by the background job**, returned in milliseconds (auth required). First call returns `202` while the job computes; `503` if the job is disabled |
+| `WS /ws/alerts` | Live push of that feed: connect, send `{"type":"auth","token":"<JWT>"}` as the first message, then receive `snapshot` / `update` / `ping` frames. See "Live alerts" below |
 
 `GET /conjunctions` also accepts `?ml=true` to add `ml_risk_level`, `ml_risk_score` and `ml_probabilities` from the ML model.
 
 `GET /conjunctions` only compares positions at the current instant. `GET /conjunctions/forecast` scans a whole time window instead: it propagates every object on a coarse grid, uses a KDTree plus a straight-line approach estimate to discard pairs that cannot come close, then refines the time of closest approach of the survivors with exact SGP4 states. Objects flying in formation (e.g. a vehicle docked to the ISS) are excluded by default because they are not collision risks. `GET /watchlist/alerts` runs the same screening but only for pairs that involve the caller's saved satellites, which is cheaper than a full-catalog forecast (about 9 s and 260 MB for the whole active catalog over 24 h on synthetic data, versus 25 s and 730 MB). Each watched satellite is listed with its own alert count; one whose TLE could not be fetched or propagated is marked `unavailable` with a reason, so "no alerts" is never confused with "could not check". Results are screening output: TLE accuracy degrades by several km per day, so treat distant-future TCAs with caution.
+
+### Live alerts (background job + WebSocket)
+
+Screening the catalog takes about 9 s, so polling `/watchlist/alerts` makes every refresh slow. A background job (started with the app) screens ahead of time and pushes the result instead:
+
+- **One screening pass per cycle serves every interested user**: the job screens the union of their watchlists once, then cuts each user's feed from it. "Interested" means an open WebSocket, a recent call to `/watchlist/alerts/latest`, or a just-changed watchlist; nobody else is computed, so an idle server does no screening.
+- **A connection gets the last snapshot immediately.** Only a user with no snapshot yet waits for a computation. After each cycle the new feed is diffed against the previous one: the `update` frame carries the full snapshot plus `changes` (`new`, `escalated`, `cleared`, `expired`, `updated`, and a `notable` flag for "worth alerting the user"). If nothing at all changed, only a small `ping` is sent.
+- **Auth:** browsers cannot set headers on a WebSocket, and a token in the URL ends up in logs, so the JWT is sent as the first message (10 s to do so). The connection is closed with code 4401 when the token expires, 4403 for an origin not in `ORBITGUARD_CORS_ORIGINS`, 4429 beyond 5 connections per user. Clients may send `{"type":"refresh"}` (2 per minute).
+- **Measured** on a real uvicorn process with a synthetic 7,000-object catalog: reading the feed takes 3 to 4 ms once a snapshot exists (polling took 9.7 s). The first snapshot for a user still costs one full screening (about 10 s), and so does a watchlist change (the new satellite has to be screened), so those pushes arrive after roughly that long; memory was about 280 MB.
+- **State is in process memory**, like the rate limiters, so this needs the single-worker setup the Dockerfile uses. Behind a reverse proxy, allow WebSocket upgrades on `/ws/alerts` (nginx: `proxy_http_version 1.1` plus the `Upgrade`/`Connection` headers).
+
+| Variable | Meaning |
+|---|---|
+| `ORBITGUARD_ALERT_JOB` | `1` (default) runs the job; `0` turns it off (`/ws/alerts` then refuses connections and `/watchlist/alerts/latest` returns 503; `/watchlist/alerts` still works) |
+| `ORBITGUARD_ALERT_INTERVAL` | Seconds between refreshes, default 300, minimum 30 |
+| `ORBITGUARD_ALERT_GROUP`, `_HOURS`, `_THRESHOLD_KM` | What the job screens: CelesTrak group (default `active`), look-ahead (default 24 h), miss-distance threshold (default 5 km) |
 
 ### TLE caching and data freshness
 
@@ -155,7 +175,7 @@ The backend has been tested against live CelesTrak data — e.g. the ISS reliabl
 
 - [ ] Scale to 100+ tracked objects (currently tested with ~10–20)
 - [ ] Migrate SQLite cache to Postgres
-- [ ] WebSocket push instead of polling
+- [x] WebSocket push instead of polling (precomputed by a background job; see "Live alerts")
 - [x] ML-based risk scoring (Random Forest) alongside the current rule-based system
 - [x] User registration, login and per-user watchlist
 - [ ] Retrain ML model on real conjunction data

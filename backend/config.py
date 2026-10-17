@@ -15,6 +15,12 @@ at import time so a bad setup fails at startup instead of on the first request.
                              (default: this folder). Point it at a volume when deploying.
     ORBITGUARD_TRUST_PROXY   set to 1 only when running behind exactly one reverse proxy
                              that sets X-Forwarded-For; used for per-client rate limits.
+    ORBITGUARD_ALERT_JOB     1 (default) runs the background job that precomputes watchlist
+                             alerts and pushes them over /ws/alerts; 0 turns it off.
+    ORBITGUARD_ALERT_INTERVAL  seconds between refreshes (default 300, minimum 30).
+    ORBITGUARD_ALERT_GROUP / _HOURS / _THRESHOLD_KM   what the job screens: CelesTrak group
+                             (default active), look-ahead window (default 24 h) and miss-distance
+                             threshold (default 5 km).
 """
 
 import logging
@@ -96,3 +102,30 @@ def trust_proxy(env=os.environ) -> bool:
 DATA_DIR = data_dir()
 CORS_ORIGINS = parse_cors_origins()
 TRUST_PROXY = trust_proxy()
+
+
+def alert_job_settings(env=os.environ) -> dict:
+    """Settings for the background alert job (validated like everything else at startup)."""
+    def number(name: str, default: float, low: float, high: float) -> float:
+        raw = (env.get(name) or "").strip()
+        if not raw:
+            return default
+        try:
+            value = float(raw)
+        except ValueError:
+            raise RuntimeError(f"{name}={raw!r} is not a number")
+        if not (low <= value <= high):
+            raise RuntimeError(f"{name}={raw} is out of range ({low:g} to {high:g})")
+        return value
+
+    raw_flag = env.get("ORBITGUARD_ALERT_JOB")
+    return {
+        "enabled": True if raw_flag is None or not raw_flag.strip() else _flag(raw_flag),
+        "interval_seconds": number("ORBITGUARD_ALERT_INTERVAL", 300.0, 30.0, 86_400.0),
+        "group": (env.get("ORBITGUARD_ALERT_GROUP") or "active").strip(),
+        "hours": number("ORBITGUARD_ALERT_HOURS", 24.0, 0.1, 168.0),
+        "threshold_km": number("ORBITGUARD_ALERT_THRESHOLD_KM", 5.0, 0.1, 1000.0),
+    }
+
+
+ALERT_JOB = alert_job_settings()

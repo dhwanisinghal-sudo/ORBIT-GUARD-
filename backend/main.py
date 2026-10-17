@@ -31,6 +31,7 @@ import watchlist
 import forecast_service as svc
 import ground_track as gt
 import maneuver
+import alert_hub
 
 log = logging.getLogger("uvicorn.error")   # so startup messages show in uvicorn's console output
 
@@ -41,12 +42,19 @@ async def lifespan(_app: FastAPI):
     started = time.perf_counter()
     ml_risk.warm_up()
     log.info("ML risk model ready in %.1f s", time.perf_counter() - started)
-    yield
+    if config.ALERT_JOB["enabled"]:
+        await alert_hub.hub.start()
+        log.info("Alert job on: refresh every %g s", alert_hub.hub.interval)
+    try:
+        yield
+    finally:
+        await alert_hub.hub.stop()
 
 
-app = FastAPI(title="OrbitGuard API", version="0.4.0", lifespan=lifespan)
+app = FastAPI(title="OrbitGuard API", version="0.5.0", lifespan=lifespan)
 app.include_router(auth.router)
 app.include_router(watchlist.router)
+app.include_router(alert_hub.router)
 
 # Only the configured frontend origins may call this API from a browser
 # (ORBITGUARD_CORS_ORIGINS; default: the Vite dev server). Auth uses a bearer token
