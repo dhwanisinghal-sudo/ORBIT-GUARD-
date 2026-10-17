@@ -1,0 +1,10 @@
+venv/ 
+__pycache__/ 
+orbitguard_cache.db 
+orbitguard_users.db
+models/risk_model.joblib
+backend/models/
+
+.env
+*.db-wal
+*.db-shm

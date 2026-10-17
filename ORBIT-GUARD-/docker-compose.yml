@@ -1,0 +1,35 @@
+# Run the API:   copy .env.example to .env, set ORBITGUARD_SECRET, then   docker compose up --build
+# With Postgres instead of SQLite files (see .env.example):   docker compose --profile postgres up --build
+services:
+  api:
+    build: ./backend
+    env_file: .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - orbitguard_data:/data      # ML model (and the SQLite files unless Postgres is used) survive restarts
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+        required: false            # only waits for the database when the "postgres" profile is on
+
+  db:
+    image: postgres:16-alpine
+    profiles: ["postgres"]         # not started unless you ask for it
+    environment:
+      POSTGRES_USER: orbitguard
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}      # set it in .env; the container refuses to start without one
+      POSTGRES_DB: orbitguard
+    volumes:
+      - orbitguard_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orbitguard -d orbitguard"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped        # no published port: only the api container can reach it
+
+volumes:
+  orbitguard_data:
+  orbitguard_pg:

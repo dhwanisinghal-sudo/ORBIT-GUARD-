@@ -1,0 +1,221 @@
+# OrbitGuard
+
+AI-assisted satellite collision risk monitoring system. Fetches real orbital data, predicts satellite positions, detects potential collisions (conjunctions), scores risk, and visualizes everything on a live 3D dashboard.
+
+## What it does
+
+- **Fetches real orbital data** from [CelesTrak](https://celestrak.org) (TLE / orbital elements)
+- **Predicts satellite positions** using SGP4 orbital propagation, now or hours into the future
+- **Detects conjunctions** (close approaches between objects) using both a naive O(n²) check and a KDTree-based spatial search for scale
+- **Scores collision risk** (LOW / MEDIUM / HIGH) based on distance and relative velocity
+- **Simulates "what-if" maneuvers** — shift an object's altitude and see how the risk changes
+- **Visualizes it all** on a live-updating 3D Earth dashboard
+
+## Project structure
+
+```
+orbitguard/
+├── backend/              # Python + FastAPI backend
+│   ├── main.py           # API endpoints
+│   ├── orbit_engine.py   # CelesTrak fetch + SGP4 propagation
+│   ├── conjunction.py    # Conjunction detection (snapshot)
+│   ├── maneuver.py       # What-if maneuver: delta-v -> re-propagate -> new TCA / miss distance
+│   ├── geodetic.py       # TEME -> latitude / longitude / height (WGS-84)
+│   ├── ground_track.py   # Sub-satellite track over a time window
+│   ├── conjunction_window.py  # Time-window screening with time of closest approach (TCA)
+│   ├── db.py             # Database access: SQLite by default, Postgres when ORBITGUARD_DATABASE_URL is set
+│   ├── cache.py          # TLE cache (groups + single objects)
+│   ├── config.py         # Environment-variable settings, validated at startup
+│   ├── ratelimit.py      # In-memory rate limiter used by login/register
+│   ├── auth.py           # Registration, login, JWT auth
+│   ├── watchlist.py      # Per-user satellite watchlist + conjunction alerts
+│   ├── alert_service.py  # Watchlist screening (one pass for many users) shared by REST and the job
+│   ├── alert_hub.py      # Background alert job, snapshot diffing and the /ws/alerts WebSocket
+│   ├── forecast_service.py  # Shared validation, TLE-age and error helpers for the forecast endpoints
+│   ├── ml_risk.py        # Random Forest risk scoring
+│   ├── validate_socrates.py  # Compare the ML model with a downloaded SOCRATES CSV
+│   ├── migrate_sqlite_to_postgres.py  # One-off copy of users + watchlists from SQLite to Postgres
+│   ├── fetch_and_propagate.py  # standalone CLI script (Day 1 prototype)
+│   ├── tests/            # pytest suite (offline; CelesTrak is mocked)
+│   ├── requirements.txt  # pinned runtime dependencies
+│   └── Dockerfile
+├── docker-compose.yml
+├── .env.example
+├── frontend/             # React + Three.js dashboard
+└── index.html            # Standalone single-file dashboard (no build step needed)
+```
+
+## Backend
+
+### Setup
+
+```bash
+cd backend
+python -m venv venv
+venv\Scripts\activate        # Windows
+# source venv/bin/activate   # macOS/Linux
+
+pip install -r requirements.txt
+
+# The API refuses to start without a JWT secret (>= 32 characters). Generate and set one:
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+set ORBITGUARD_SECRET=<paste it here>          # Windows cmd
+# export ORBITGUARD_SECRET=<paste it here>     # macOS/Linux
+# (local development only: set ORBITGUARD_DEV=1 instead to use an insecure built-in secret)
+
+uvicorn main:app --reload
+```
+
+Run the tests with `pip install -r requirements-dev.txt` and `python -m pytest tests -q`. Dependencies are pinned to the versions the tests pass on (Python 3.12).
+
+API docs available at `http://127.0.0.1:8000/docs` once running.
+
+### Endpoints
+
+| Endpoint | Description |
+|---|---|
+| `GET /objects` | Live positions for a group of tracked satellites (`?group=stations` or `?group=active`, `?limit=`) |
+| `GET /objects/{norad_id}` | Position for a single satellite by NORAD catalog ID. Every position now also carries `latitude_deg`, `longitude_deg` and `geodetic_altitude_km` (height above the WGS-84 ellipsoid; `altitude_km` stays `\|r\| - 6371`) |
+| `GET /ground-track/{norad_id}` | Sub-satellite latitude/longitude over `?hours=` (default 1.5, max 72) every `?step_seconds=` (default 30), from `?start=`. Returns `points` plus `segments` already split at the ±180° meridian for map layers |
+| `GET /conjunctions` | Detected close approaches with risk levels (`?threshold_km=`, `?method=kdtree\|naive`; `kdtree` is the default and handles the full `active` catalog in milliseconds, `naive` is the O(n²) reference and is refused above 1,500 objects) |
+| `GET /conjunctions/forecast` | Screens the next `?hours=` (max 72) and returns each close approach with its **time of closest approach (TCA)**, miss distance and relative speed (`?threshold_km=`, `?step_seconds=`, `?start=`, `?include_coorbiting=`, `?ml=true`) |
+| `GET /trajectory/{norad_id}` | Predicted future positions (`?hours=0,1,6,12,24,48`) |
+| `GET /what-if` | Real maneuver analysis: applies an impulsive burn to `norad_id` (`?dv_along_ms=`, `?dv_radial_ms=`, `?dv_cross_ms=` in its RTN frame, at `?burn_in_hours=`), re-propagates, and reports the closest approach to `other_norad_id` before and after (`?window_hours=`, `?step_seconds=`, `?start=`). `altitude_delta_km` still works but is deprecated (converted to the equivalent along-track burn) |
+| `GET /cache-status` | Shows cache freshness for a group (`?group=`) or a single object (`?norad_id=`) |
+| `GET /model-info` | ML risk model accuracy, per-class metrics, feature importance |
+| `GET /risk-score` | ML risk score for a hypothetical close approach (`?distance_km=&relative_velocity_km_s=&altitude_km=`) |
+| `POST /auth/register` | Create an account (`name`, `email`, `password`) and get a JWT |
+| `POST /auth/login` | Log in (`email`, `password`) and get a JWT |
+| `GET /auth/me` | Current user (requires `Authorization: Bearer <token>`) |
+| `POST /watchlist` | Add a satellite to your watchlist (auth required) |
+| `GET /watchlist` | List your watchlist (`?live=true` adds current positions) |
+| `DELETE /watchlist/{norad_id}` | Remove a satellite from your watchlist |
+| `GET /watchlist/alerts` | Upcoming close approaches (with TCA) involving your saved satellites (auth required; same params as `/conjunctions/forecast`, default `group=active`; limited to 6 calls/min per user) |
+| `GET /watchlist/alerts/latest` | The same feed, **precomputed by the background job**, returned in milliseconds (auth required). First call returns `202` while the job computes; `503` if the job is disabled |
+| `WS /ws/alerts` | Live push of that feed: connect, send `{"type":"auth","token":"<JWT>"}` as the first message, then receive `snapshot` / `update` / `ping` frames. See "Live alerts" below |
+
+`GET /conjunctions` also accepts `?ml=true` to add `ml_risk_level`, `ml_risk_score` and `ml_probabilities` from the ML model.
+
+`GET /conjunctions` only compares positions at the current instant. `GET /conjunctions/forecast` scans a whole time window instead: it propagates every object on a coarse grid, uses a KDTree plus a straight-line approach estimate to discard pairs that cannot come close, then refines the time of closest approach of the survivors with exact SGP4 states. Objects flying in formation (e.g. a vehicle docked to the ISS) are excluded by default because they are not collision risks. `GET /watchlist/alerts` runs the same screening but only for pairs that involve the caller's saved satellites, which is cheaper than a full-catalog forecast (about 9 s and 260 MB for the whole active catalog over 24 h on synthetic data, versus 25 s and 730 MB). Each watched satellite is listed with its own alert count; one whose TLE could not be fetched or propagated is marked `unavailable` with a reason, so "no alerts" is never confused with "could not check". Results are screening output: TLE accuracy degrades by several km per day, so treat distant-future TCAs with caution.
+
+### Live alerts (background job + WebSocket)
+
+Screening the catalog takes about 9 s, so polling `/watchlist/alerts` makes every refresh slow. A background job (started with the app) screens ahead of time and pushes the result instead:
+
+- **One screening pass per cycle serves every interested user**: the job screens the union of their watchlists once, then cuts each user's feed from it. "Interested" means an open WebSocket, a recent call to `/watchlist/alerts/latest`, or a just-changed watchlist; nobody else is computed, so an idle server does no screening.
+- **A connection gets the last snapshot immediately.** Only a user with no snapshot yet waits for a computation. After each cycle the new feed is diffed against the previous one: the `update` frame carries the full snapshot plus `changes` (`new`, `escalated`, `cleared`, `expired`, `updated`, and a `notable` flag for "worth alerting the user"). If nothing at all changed, only a small `ping` is sent.
+- **Auth:** browsers cannot set headers on a WebSocket, and a token in the URL ends up in logs, so the JWT is sent as the first message (10 s to do so). The connection is closed with code 4401 when the token expires, 4403 for an origin not in `ORBITGUARD_CORS_ORIGINS`, 4429 beyond 5 connections per user. Clients may send `{"type":"refresh"}` (2 per minute).
+- **Measured** on a real uvicorn process with a synthetic 7,000-object catalog: reading the feed takes 3 to 4 ms once a snapshot exists (polling took 9.7 s). The first snapshot for a user still costs one full screening (about 10 s), and so does a watchlist change (the new satellite has to be screened), so those pushes arrive after roughly that long; memory was about 280 MB.
+- **State is in process memory**, like the rate limiters, so this needs the single-worker setup the Dockerfile uses. Behind a reverse proxy, allow WebSocket upgrades on `/ws/alerts` (nginx: `proxy_http_version 1.1` plus the `Upgrade`/`Connection` headers).
+
+| Variable | Meaning |
+|---|---|
+| `ORBITGUARD_ALERT_JOB` | `1` (default) runs the job; `0` turns it off (`/ws/alerts` then refuses connections and `/watchlist/alerts/latest` returns 503; `/watchlist/alerts` still works) |
+| `ORBITGUARD_ALERT_INTERVAL` | Seconds between refreshes, default 300, minimum 30 |
+| `ORBITGUARD_ALERT_GROUP`, `_HOURS`, `_THRESHOLD_KM` | What the job screens: CelesTrak group (default `active`), look-ahead (default 24 h), miss-distance threshold (default 5 km) |
+
+### TLE caching and data freshness
+
+TLEs are cached in the database (SQLite by default, Postgres if configured) for 30 minutes, both per group and per object, so `/objects/{id}`, `/trajectory`, `/what-if` and `/watchlist?live=true` no longer hit CelesTrak on every call (a 20-satellite watchlist costs 0 requests on a warm cache and at most 20, fetched 4 at a time, on a cold one). If CelesTrak is unreachable, an expired copy up to 24 hours old is served instead of an error, and the response says so.
+
+Nothing degrades silently. Every response carries:
+
+- `cache` - where the data came from (`upstream`, `cache` or `stale_cache`) and its age.
+- `tle_age_days` / `tle_status` (per object; `tle_staleness` rolls them up for lists) - **fresh** under 7 days, **stale** 7-30 days (accuracy degraded), **unreliable** over 30 days. Age is measured to the time being propagated. Forecast conjunctions get a `tle_status` equal to the weaker of their two TLEs.
+- `skipped` / `objects_unpropagatable` - objects SGP4 could not propagate (decayed, malformed, TLE too old), with counts per SGP4 error code and a few examples, instead of vanishing from the results.
+- `warnings` - plain-English notes summarising the above.
+
+`/objects` `count` is the number of objects actually returned; `requested` is how many TLEs were fetched. A non-positive `limit` is rejected with 400.
+
+### Security and deployment
+
+Configuration is by environment variable (see `.env.example` and `config.py`); a bad setup stops the app at startup instead of failing later.
+
+| Variable | Purpose |
+|---|---|
+| `ORBITGUARD_SECRET` | **Required.** JWT signing key, 32+ characters. The app refuses to start without it (or with the old `dev-only-change-me` default). |
+| `ORBITGUARD_DEV=1` | Local development only: allows an insecure built-in secret, with a loud warning. |
+| `ORBITGUARD_CORS_ORIGINS` | Comma-separated frontend origins allowed to call the API from a browser. Default: the Vite dev server (`http://localhost:5173`, `http://127.0.0.1:5173`). |
+| `ORBITGUARD_DATA_DIR` | Where the SQLite databases and the ML model live (default: `backend/`). Mount a volume here when deploying. |
+| `ORBITGUARD_DATABASE_URL` | Optional. A Postgres URL (`postgresql://user:password@host:5432/dbname`) stores users, watchlists and the TLE cache there instead of in SQLite files. Unset = SQLite. See "Postgres" below. |
+| `ORBITGUARD_DB_POOL_SIZE` | Maximum Postgres connections this process holds (default 10, range 1 to 100). |
+| `ORBITGUARD_TRUST_PROXY=1` | Only behind exactly one reverse proxy that sets `X-Forwarded-For`; rate limits then use that address instead of the proxy's. |
+
+- **Rate limiting:** registration is limited to 10 attempts/hour per IP; login to 20 attempts/minute per IP and 5 *failed* attempts per 15 minutes per (IP, email) pair, during which even the right password is refused. Blocked requests get `429` with `Retry-After`. Counters are in memory, so they are per process and reset on restart.
+- **Passwords/timing:** login does the same password-hash work for unknown emails, so response time doesn't reveal which emails are registered.
+- **SQLite (default):** foreign keys are enforced (`PRAGMA foreign_keys=ON`) and WAL mode is on, so concurrent requests don't block each other.
+- **Startup:** the ML model is loaded (or trained) when the server starts, not during the first `?ml=true` request.
+- **Docker:** `docker compose up --build` after copying `.env.example` to `.env` and setting `ORBITGUARD_SECRET`. It runs **one** worker on purpose: the rate-limit counters and the alert job's snapshots live in process memory, and Postgres does not change that (see "Postgres" below). For Postgres run `docker compose --profile postgres up --build` and set `POSTGRES_PASSWORD` and `ORBITGUARD_DATABASE_URL` in `.env` (the commented lines in `.env.example`).
+
+### Postgres (optional)
+
+By default everything is stored in SQLite files, which is fine for one server process. Set `ORBITGUARD_DATABASE_URL` to keep users, watchlists and the TLE cache in Postgres instead (managed database, backups, a database that outlives the container):
+
+```bash
+export ORBITGUARD_DATABASE_URL=postgresql://user:password@host:5432/orbitguard
+uvicorn main:app
+```
+
+- The tables are created on first use (a Postgres advisory lock keeps two starting processes from racing). There is nothing else to set up, and no ORM: `db.py` is the only place that knows which database is in use.
+- **Already have SQLite data?** Run `python migrate_sqlite_to_postgres.py` once (add `--dry-run` to preview, `--users-db PATH` for a non-default file). It copies users and watchlists with their ids, so existing login tokens keep working; the TLE cache is not copied because it refills by itself. It refuses to run when Postgres already has users or watchlist rows, and the SQLite file is only read.
+- **Tested on Postgres 16:** the whole test suite runs unchanged against it (`ORBITGUARD_DATABASE_URL=... python -m pytest tests -q`; the two SQLite-pragma tests are skipped), plus `tests/test_step10_postgres.py` for the Postgres-only behaviour (foreign keys, duplicate keys, upserts, pool reuse after a failed statement, the migration). `docker-compose.yml` was validated with `docker compose config`; the container build itself was not run in that environment.
+- **This does not make several workers safe on its own.** The login/register rate limits and the alert job (its snapshots and the `/ws/alerts` connections) are still in process memory, so keep one worker. Running more than one needs those moved to a shared store first (see the roadmap).
+
+### ML risk scoring
+
+A Random Forest classifier scores each conjunction (LOW / MEDIUM / HIGH) from distance, relative velocity, mean altitude and altitude gap. **Note:** there is no public dataset of real collision outcomes, so the model is trained on synthetic labels from a physics-inspired formula plus noise. It is a scoring framework ready to be retrained on real conjunction data (e.g. CDMs), not a validated collision predictor. Run `python ml_risk.py` to retrain; `/model-info` reports the metrics.
+
+#### Checking the model against SOCRATES
+
+`validate_socrates.py` compares the model with CelesTrak's [SOCRATES](https://celestrak.org/SOCRATES) conjunction screening, which lists real close approaches with a miss distance, relative speed and `MAX_PROB` (an upper-bound collision probability). Download a SOCRATES result as CSV on a machine that can reach CelesTrak (column layout: [format page](https://www.celestrak.org/SOCRATES/socrates-format.php)), then:
+
+```bash
+python validate_socrates.py socrates.csv --out report.json --rows-out rows.csv
+python validate_socrates.py socrates.csv --no-tle-lookup      # offline: altitudes fall back to 500 km
+```
+
+SOCRATES has no altitudes, so the script fetches both objects' TLEs and propagates them to the time of closest approach. `MAX_PROB` becomes reference labels (HIGH at 1e-4 or more, MEDIUM at 1e-5 or more; change with `--high-pc` / `--medium-pc`). The report gives accuracy and a confusion matrix for the model and for the old distance-only rule, the Spearman correlation of the ML score with `log10(MAX_PROB)` next to the correlation of miss distance alone (the baseline the model has to beat), AUC, and the `MAX_PROB` range inside each predicted class.
+
+What it cannot tell you: `MAX_PROB` is a conservative screening estimate, not a collision record; SOCRATES only lists events within 5 km; and the SOCRATES pages do not state units, so the script assumes km and km/s and warns when the numbers look like metres (`--range-unit m`, `--speed-unit m/s`). The script was tested offline on a made-up fixture in the documented layout; **no real SOCRATES file has been run through it yet**, so there is no result to quote.
+
+### Authentication
+
+Passwords are hashed with PBKDF2-SHA256 and sessions use JWT. Set the `ORBITGUARD_SECRET` environment variable in any real deployment.
+
+### Tech
+
+Python, FastAPI, scikit-learn, PyJWT, [sgp4](https://pypi.org/project/sgp4/), scipy (KDTree), SQLite or Postgres (psycopg).
+
+## Frontend
+
+Two options:
+
+1. **`index.html`** — a standalone dashboard with no build step. Just open it in a browser while the backend is running. Renders a 3D Earth (Three.js via CDN) with live satellite positions and conjunction alerts, polling the backend every 15 seconds.
+2. **`frontend/`** — a full React + Vite application with dedicated components (`Earth`, `Satellite`, `ConjunctionAlerts`, `RiskOverview`, etc.). Run with:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+## Verified with real data
+
+The backend has been tested against live CelesTrak data — e.g. the ISS reliably returns an altitude in the ~400–430 km range, matching its known real-world orbit. The what-if maneuver numerics are checked in the test suite against the Clohessy–Wiltshire relative-motion solution (within 2% over three orbits); the "before" numbers are plain SGP4, and the burn's effect is added as the difference of two identical J2 integrations. It is an impulsive-burn screening aid: no drag or solar-pressure difference, and SGP4's own TLE-age error applies.
+
+## Roadmap
+
+- [x] Scale to 100+ tracked objects (KDTree screening; tested on a 7,000-object synthetic catalog)
+- [x] Optional Postgres storage for users, watchlists and the TLE cache (`ORBITGUARD_DATABASE_URL`; see "Postgres")
+- [ ] Share rate limits and the alert job's state across workers (needed before running more than one worker)
+- [x] WebSocket push instead of polling (precomputed by a background job; see "Live alerts")
+- [x] ML-based risk scoring (Random Forest) alongside the current rule-based system
+- [x] User registration, login and per-user watchlist
+- [x] Script to compare the ML model with SOCRATES (`validate_socrates.py`)
+- [ ] Run that comparison on a real SOCRATES download and record the result
+- [ ] Retrain ML model on real conjunction data
+
+## Contributors
+
+- Dhwani Singhal — Backend, orbital mechanics, API
+- Aishwarya-93 — Frontend (React + Three.js)
