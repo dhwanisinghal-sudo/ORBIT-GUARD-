@@ -18,7 +18,8 @@ orbitguard/
 ├── backend/              # Python + FastAPI backend
 │   ├── main.py           # API endpoints
 │   ├── orbit_engine.py   # CelesTrak fetch + SGP4 propagation
-│   ├── conjunction.py    # Conjunction detection + what-if simulator
+│   ├── conjunction.py    # Conjunction detection (snapshot) + what-if simulator
+│   ├── conjunction_window.py  # Time-window screening with time of closest approach (TCA)
 │   ├── cache.py          # SQLite caching layer
 │   ├── auth.py           # Registration, login, JWT auth
 │   ├── watchlist.py      # Per-user satellite watchlist
@@ -51,6 +52,7 @@ API docs available at `http://127.0.0.1:8000/docs` once running.
 | `GET /objects` | Live positions for a group of tracked satellites (`?group=stations` or `?group=active`, `?limit=`) |
 | `GET /objects/{norad_id}` | Position for a single satellite by NORAD catalog ID |
 | `GET /conjunctions` | Detected close approaches with risk levels (`?threshold_km=`, `?method=naive\|kdtree`) |
+| `GET /conjunctions/forecast` | Screens the next `?hours=` (max 72) and returns each close approach with its **time of closest approach (TCA)**, miss distance and relative speed (`?threshold_km=`, `?step_seconds=`, `?start=`, `?include_coorbiting=`, `?ml=true`) |
 | `GET /trajectory/{norad_id}` | Predicted future positions (`?hours=0,1,6,12,24,48`) |
 | `GET /what-if` | Simulates an altitude adjustment and shows before/after risk (`?norad_id=&other_norad_id=&altitude_delta_km=`) |
 | `GET /cache-status` | Shows cache freshness for a given group |
@@ -64,6 +66,8 @@ API docs available at `http://127.0.0.1:8000/docs` once running.
 | `DELETE /watchlist/{norad_id}` | Remove a satellite from your watchlist |
 
 `GET /conjunctions` also accepts `?ml=true` to add `ml_risk_level`, `ml_risk_score` and `ml_probabilities` from the ML model.
+
+`GET /conjunctions` only compares positions at the current instant. `GET /conjunctions/forecast` scans a whole time window instead: it propagates every object on a coarse grid, uses a KDTree plus a straight-line approach estimate to discard pairs that cannot come close, then refines the time of closest approach of the survivors with exact SGP4 states. Objects flying in formation (e.g. a vehicle docked to the ISS) are excluded by default because they are not collision risks. Results are screening output: TLE accuracy degrades by several km per day, so treat distant-future TCAs with caution.
 
 ### ML risk scoring
 

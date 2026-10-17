@@ -11,12 +11,15 @@ frontend teammate without them needing to read your code).
 See README.md for the full endpoint list, or open /docs when running.
 """
 
+from datetime import datetime, timezone
+
 import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 import orbit_engine as engine
 import conjunction as conj
+import conjunction_window as conjw
 import cache
 import auth
 import ml_risk
@@ -34,6 +37,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# objects x time steps allowed in one /conjunctions/forecast request (keeps memory bounded)
+MAX_FORECAST_WORK = 12_000_000
 
 
 def _get_tles(group: str = engine.GROUP_STATIONS, limit: int | None = None, force_refresh: bool = False):
@@ -169,6 +176,95 @@ def list_conjunctions(
         }
     except Exception as exc:
         raise _http_error(exc, "Failed to detect conjunctions")
+
+
+@app.get("/conjunctions/forecast")
+def forecast_conjunctions(
+    group: str = "stations",
+    limit: int | None = None,
+    hours: float = 24.0,
+    threshold_km: float = 5.0,
+    step_seconds: float = 60.0,
+    include_coorbiting: bool = False,
+    start: str | None = None,
+    ml: bool = False,
+):
+    """
+    Time-window conjunction screening: finds every close approach in the next
+    `hours` and reports the time of closest approach (TCA) and miss distance.
+    Unlike /conjunctions (a snapshot of "right now"), this catches pairs that
+    will pass close later.
+
+    Query params:
+      group: CelesTrak group name (default "stations")
+      limit: cap the number of objects considered
+      hours: window length, 0 < hours <= 72 (TLE accuracy degrades beyond ~3 days)
+      threshold_km: miss distance below which a pair is reported
+      step_seconds: coarse screening grid, 10-300 s (smaller = safer but slower)
+      include_coorbiting: also report objects that fly together (e.g. docked
+          vehicles). Excluded by default - they are not collision risks.
+      start: ISO-8601 UTC start time (default: now)
+      ml: add ML risk fields, as in /conjunctions
+    """
+    # validate cheaply before any network call
+    if not (0 < hours <= conjw.MAX_WINDOW_HOURS):
+        raise HTTPException(status_code=400, detail=f"hours must be > 0 and <= {conjw.MAX_WINDOW_HOURS:g}")
+    if not (conjw.MIN_STEP_S <= step_seconds <= conjw.MAX_STEP_S):
+        raise HTTPException(
+            status_code=400,
+            detail=f"step_seconds must be between {conjw.MIN_STEP_S:g} and {conjw.MAX_STEP_S:g}",
+        )
+    if threshold_km <= 0:
+        raise HTTPException(status_code=400, detail="threshold_km must be > 0")
+
+    start_dt = None
+    if start:
+        try:
+            start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="start must be ISO-8601, e.g. 2026-10-17T12:00:00Z")
+
+    try:
+        tles = _get_tles(group=group, limit=limit)
+        n_steps = int(hours * 3600 / step_seconds) + 1
+        if len(tles) * n_steps > MAX_FORECAST_WORK:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{len(tles)} objects x {n_steps} time steps is too much work for one request "
+                    f"(max {MAX_FORECAST_WORK:,}). Lower limit/hours or raise step_seconds."
+                ),
+            )
+
+        out = conjw.find_conjunctions_in_window(
+            tles,
+            start=start_dt,
+            hours=hours,
+            threshold_km=threshold_km,
+            step_seconds=step_seconds,
+            include_coorbiting=include_coorbiting,
+        )
+        results = out["conjunctions"]
+        if ml:
+            results = ml_risk.score_conjunctions(results)
+
+        return {
+            "window_start_utc": (start_dt or datetime.now(timezone.utc)).isoformat(),
+            "hours": hours,
+            "threshold_km": threshold_km,
+            "step_seconds": step_seconds,
+            "ml": ml,
+            "objects_checked": out["objects_checked"],
+            "objects_unpropagatable": out["objects_unpropagatable"],
+            "candidate_pairs": out["candidate_pairs"],
+            "excluded_coorbiting_pairs": out["excluded_coorbiting_pairs"],
+            "count": len(results),
+            "conjunctions": results,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise _http_error(exc, "Failed to forecast conjunctions")
 
 
 @app.get("/what-if")
