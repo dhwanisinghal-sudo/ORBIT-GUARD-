@@ -133,6 +133,9 @@ def _get_model():
 
 def get_metrics() -> dict:
     _get_model()
+    if not METRICS_PATH.exists():
+        # model file present but metrics file missing -> retrain to regenerate both
+        train()
     return json.loads(METRICS_PATH.read_text())
 
 

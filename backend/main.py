@@ -8,11 +8,10 @@ Then open http://127.0.0.1:8000/docs for interactive API docs (FastAPI
 generates this automatically - it's a good way to hand this to your
 frontend teammate without them needing to read your code).
 
-Endpoints:
-    GET /objects            -> list of tracked objects with current position
-    GET /objects/{norad_id} -> single object's current position
+See README.md for the full endpoint list, or open /docs when running.
 """
 
+import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -36,13 +35,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Simple in-memory cache retained as a fallback; the real cache is now
-# the SQLite-backed one in cache.py, which survives server restarts.
-_cache: dict = {"tles": None, "fetched_at": None}
-
 
 def _get_tles(group: str = engine.GROUP_STATIONS, limit: int | None = None, force_refresh: bool = False):
     return cache.get_tles(group=group, fetch_fn=engine.fetch_many, limit=limit, force_refresh=force_refresh)
+
+
+def _http_error(exc: Exception, context: str) -> HTTPException:
+    """
+    Map an internal exception to the right HTTP status instead of a blanket 502.
+      TLENotFound            -> 404 (CelesTrak has no such object/group)
+      ValueError             -> 400 (bad input from the caller)
+      RuntimeError           -> 422 (object can't be propagated, e.g. decayed)
+      requests.RequestException -> 502 (CelesTrak unreachable / errored)
+      anything else          -> 500 (our bug)
+    """
+    if isinstance(exc, engine.TLENotFound):
+        return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, ValueError):
+        return HTTPException(status_code=400, detail=f"{context}: {exc}")
+    if isinstance(exc, RuntimeError):
+        return HTTPException(status_code=422, detail=f"{context}: {exc}")
+    if isinstance(exc, requests.RequestException):
+        return HTTPException(status_code=502, detail=f"{context}: upstream CelesTrak error ({exc})")
+    return HTTPException(status_code=500, detail=f"{context}: unexpected error ({exc})")
 
 
 @app.get("/")
@@ -73,7 +88,7 @@ def list_objects(group: str = "stations", limit: int | None = None):
         tles = _get_tles(group=group, limit=limit)
         return {"count": len(tles), "objects": engine.propagate_many(tles)}
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Failed to fetch/propagate: {exc}")
+        raise _http_error(exc, "Failed to fetch/propagate")
 
 
 @app.get("/objects/{norad_id}")
@@ -83,7 +98,7 @@ def get_object(norad_id: int):
         tle = engine.fetch_tle(norad_id)
         return engine.propagate(tle)
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Failed to fetch/propagate {norad_id}: {exc}")
+        raise _http_error(exc, f"Failed to fetch/propagate {norad_id}")
 
 
 @app.get("/trajectory/{norad_id}")
@@ -96,11 +111,15 @@ def get_trajectory(norad_id: int, hours: str = "0,1,6,12,24,48"):
     """
     try:
         hours_list = [float(h) for h in hours.split(",")]
+    except ValueError:
+        raise HTTPException(status_code=400, detail="hours must be comma-separated numbers, e.g. '0,1,6'")
+
+    try:
         tle = engine.fetch_tle(norad_id)
         trajectory = engine.propagate_trajectory(tle, hours_ahead=hours_list)
         return {"norad_id": norad_id, "count": len(trajectory), "trajectory": trajectory}
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Failed to predict trajectory for {norad_id}: {exc}")
+        raise _http_error(exc, f"Failed to predict trajectory for {norad_id}")
 
 
 @app.get("/conjunctions")
@@ -123,6 +142,11 @@ def list_conjunctions(
       ml: if true, also add ML risk fields (ml_risk_level, ml_risk_score,
           ml_probabilities) from the Random Forest model
     """
+    if method not in ("naive", "kdtree"):
+        raise HTTPException(status_code=400, detail="method must be 'naive' or 'kdtree'")
+    if threshold_km <= 0:
+        raise HTTPException(status_code=400, detail="threshold_km must be > 0")
+
     try:
         tles = _get_tles(group=group, limit=limit)
         objects = engine.propagate_many(tles)
@@ -144,7 +168,7 @@ def list_conjunctions(
             "conjunctions": results,
         }
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Failed to detect conjunctions: {exc}")
+        raise _http_error(exc, "Failed to detect conjunctions")
 
 
 @app.get("/what-if")
@@ -177,7 +201,7 @@ def what_if_maneuver(
             **result,
         }
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Failed to simulate maneuver: {exc}")
+        raise _http_error(exc, "Failed to simulate maneuver")
 
 
 @app.get("/model-info")

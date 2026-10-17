@@ -34,13 +34,18 @@ def get_tles(group: str, fetch_fn, limit: int | None = None, force_refresh: bool
     """
     Return TLEs for a group, using the SQLite cache when it's still fresh.
 
+    The cache always stores the FULL group; `limit` is applied only when
+    returning results. (Caching a limited fetch would make a later, larger
+    request silently return the truncated list.)
+
     group: CelesTrak group name, used as the cache key
     fetch_fn: the function to call on a cache miss (e.g. engine.fetch_many)
-    limit: passed through to fetch_fn on a cache miss
+    limit: cap on how many TLEs are returned to the caller
     force_refresh: bypass the cache and hit CelesTrak regardless of age
     """
     conn = _get_conn()
     try:
+        tles = None
         if not force_refresh:
             row = conn.execute(
                 "SELECT tles_json, fetched_at FROM tle_cache WHERE group_name = ?",
@@ -48,18 +53,19 @@ def get_tles(group: str, fetch_fn, limit: int | None = None, force_refresh: bool
             ).fetchone()
             if row:
                 tles_json, fetched_at = row
-                age = time.time() - fetched_at
-                if age < CACHE_TTL_SECONDS:
-                    return json.loads(tles_json)
+                if time.time() - fetched_at < CACHE_TTL_SECONDS:
+                    tles = json.loads(tles_json)
 
-        # cache miss or stale - fetch fresh data
-        tles = fetch_fn(group=group, limit=limit)
-        conn.execute(
-            "INSERT OR REPLACE INTO tle_cache (group_name, tles_json, fetched_at) VALUES (?, ?, ?)",
-            (group, json.dumps(tles), time.time()),
-        )
-        conn.commit()
-        return tles
+        if tles is None:
+            # cache miss or stale - fetch the whole group, never a truncated one
+            tles = fetch_fn(group=group, limit=None)
+            conn.execute(
+                "INSERT OR REPLACE INTO tle_cache (group_name, tles_json, fetched_at) VALUES (?, ?, ?)",
+                (group, json.dumps(tles), time.time()),
+            )
+            conn.commit()
+
+        return tles[:limit] if limit else tles
     finally:
         conn.close()
 

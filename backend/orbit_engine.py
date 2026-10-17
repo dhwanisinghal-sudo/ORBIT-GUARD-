@@ -30,6 +30,10 @@ GROUP_STATIONS = "stations"
 GROUP_ACTIVE = "active"
 
 
+class TLENotFound(Exception):
+    """CelesTrak has no data for the requested NORAD ID or group."""
+
+
 def _tle_epoch_to_datetime(line1: str) -> datetime:
     """Parse the epoch (columns 19-32) out of TLE line 1 into a UTC datetime."""
     epoch_str = line1[18:32].strip()  # e.g. "24235.16000531"
@@ -46,7 +50,8 @@ def fetch_tle(norad_id: int) -> dict:
     resp.raise_for_status()
     lines = [ln for ln in resp.text.strip().splitlines() if ln.strip()]
     if len(lines) < 3:
-        raise ValueError(f"Unexpected response from CelesTrak:\n{resp.text}")
+        # CelesTrak answers HTTP 200 with a short text such as "No GP data found"
+        raise TLENotFound(f"No TLE found for NORAD ID {norad_id}")
     name, line1, line2 = lines[0].strip(), lines[1], lines[2]
     return {"name": name, "line1": line1, "line2": line2}
 
@@ -66,6 +71,8 @@ def fetch_many(group: str = GROUP_STATIONS, limit: int | None = None) -> list[di
     resp.raise_for_status()
 
     lines = [ln for ln in resp.text.splitlines() if ln.strip()]
+    if len(lines) < 3:
+        raise TLENotFound(f"No TLE data found for group '{group}'")
     if len(lines) % 3 != 0:
         raise ValueError(
             f"Expected TLE lines in groups of 3, got {len(lines)} lines total. "
@@ -86,7 +93,11 @@ def propagate(tle: dict, when: datetime | None = None) -> dict:
     when = when or datetime.now(timezone.utc)
 
     sat = Satrec.twoline2rv(tle["line1"], tle["line2"], WGS72)
-    jd, fr = jday(when.year, when.month, when.day, when.hour, when.minute, when.second)
+    # Include microseconds: a 1 s truncation is ~7.5 km of along-track error in LEO.
+    jd, fr = jday(
+        when.year, when.month, when.day,
+        when.hour, when.minute, when.second + when.microsecond / 1e6,
+    )
 
     error_code, position, velocity = sat.sgp4(jd, fr)
     if error_code != 0:
@@ -100,7 +111,7 @@ def propagate(tle: dict, when: datetime | None = None) -> dict:
 
     return {
         "name": tle["name"],
-        "norad_id": tle["line1"].split()[1].rstrip("U"),
+        "norad_id": int(tle["line1"][2:7]),  # fixed-width TLE column, always 5 digits
         "timestamp_utc": when.isoformat(),
         "position_km": {"x": round(x, 3), "y": round(y, 3), "z": round(z, 3)},
         "velocity_km_s": {"x": round(vx, 3), "y": round(vy, 3), "z": round(vz, 3)},
