@@ -55,7 +55,7 @@ API docs available at `http://127.0.0.1:8000/docs` once running.
 | `GET /conjunctions/forecast` | Screens the next `?hours=` (max 72) and returns each close approach with its **time of closest approach (TCA)**, miss distance and relative speed (`?threshold_km=`, `?step_seconds=`, `?start=`, `?include_coorbiting=`, `?ml=true`) |
 | `GET /trajectory/{norad_id}` | Predicted future positions (`?hours=0,1,6,12,24,48`) |
 | `GET /what-if` | Simulates an altitude adjustment and shows before/after risk (`?norad_id=&other_norad_id=&altitude_delta_km=`) |
-| `GET /cache-status` | Shows cache freshness for a given group |
+| `GET /cache-status` | Shows cache freshness for a group (`?group=`) or a single object (`?norad_id=`) |
 | `GET /model-info` | ML risk model accuracy, per-class metrics, feature importance |
 | `GET /risk-score` | ML risk score for a hypothetical close approach (`?distance_km=&relative_velocity_km_s=&altitude_km=`) |
 | `POST /auth/register` | Create an account (`name`, `email`, `password`) and get a JWT |
@@ -68,6 +68,19 @@ API docs available at `http://127.0.0.1:8000/docs` once running.
 `GET /conjunctions` also accepts `?ml=true` to add `ml_risk_level`, `ml_risk_score` and `ml_probabilities` from the ML model.
 
 `GET /conjunctions` only compares positions at the current instant. `GET /conjunctions/forecast` scans a whole time window instead: it propagates every object on a coarse grid, uses a KDTree plus a straight-line approach estimate to discard pairs that cannot come close, then refines the time of closest approach of the survivors with exact SGP4 states. Objects flying in formation (e.g. a vehicle docked to the ISS) are excluded by default because they are not collision risks. Results are screening output: TLE accuracy degrades by several km per day, so treat distant-future TCAs with caution.
+
+### TLE caching and data freshness
+
+TLEs are cached in SQLite for 30 minutes, both per group and per object, so `/objects/{id}`, `/trajectory`, `/what-if` and `/watchlist?live=true` no longer hit CelesTrak on every call (a 20-satellite watchlist costs 0 requests on a warm cache and at most 20, fetched 4 at a time, on a cold one). If CelesTrak is unreachable, an expired copy up to 24 hours old is served instead of an error, and the response says so.
+
+Nothing degrades silently. Every response carries:
+
+- `cache` - where the data came from (`upstream`, `cache` or `stale_cache`) and its age.
+- `tle_age_days` / `tle_status` (per object; `tle_staleness` rolls them up for lists) - **fresh** under 7 days, **stale** 7-30 days (accuracy degraded), **unreliable** over 30 days. Age is measured to the time being propagated. Forecast conjunctions get a `tle_status` equal to the weaker of their two TLEs.
+- `skipped` / `objects_unpropagatable` - objects SGP4 could not propagate (decayed, malformed, TLE too old), with counts per SGP4 error code and a few examples, instead of vanishing from the results.
+- `warnings` - plain-English notes summarising the above.
+
+`/objects` `count` is the number of objects actually returned; `requested` is how many TLEs were fetched. A non-positive `limit` is rejected with 400.
 
 ### ML risk scoring
 

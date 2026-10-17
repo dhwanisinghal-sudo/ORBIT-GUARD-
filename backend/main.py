@@ -43,8 +43,52 @@ app.add_middleware(
 MAX_FORECAST_WORK = 12_000_000
 
 
+def _get_tles_meta(group: str = engine.GROUP_STATIONS, limit: int | None = None, force_refresh: bool = False):
+    """Group TLEs through the cache -> (tles, cache_meta)."""
+    return cache.get_tles(group=group, fetch_fn=engine.fetch_many, limit=limit,
+                          force_refresh=force_refresh, return_meta=True)
+
+
 def _get_tles(group: str = engine.GROUP_STATIONS, limit: int | None = None, force_refresh: bool = False):
-    return cache.get_tles(group=group, fetch_fn=engine.fetch_many, limit=limit, force_refresh=force_refresh)
+    return _get_tles_meta(group=group, limit=limit, force_refresh=force_refresh)[0]
+
+
+def _get_tle(norad_id: int):
+    """One object's TLE through the single-object cache -> (tle, cache_meta)."""
+    return cache.get_tle(norad_id, engine.fetch_tle, return_meta=True)
+
+
+def _get_tles_by_ids(norad_ids):
+    """Several objects at once (fetched in parallel on a miss). Raises the first per-object error."""
+    tles, errors, metas = cache.get_tles_by_ids(norad_ids, engine.fetch_tle)
+    for nid in dict.fromkeys(norad_ids):
+        if nid in errors:
+            raise errors[nid]
+    return tles, metas
+
+
+def _check_limit(limit: int | None):
+    if limit is not None and limit <= 0:
+        raise HTTPException(status_code=400, detail="limit must be a positive integer")
+
+
+def _warnings(staleness: dict | None = None, skipped: int = 0, cache_meta: dict | None = None) -> list[str]:
+    """Human-readable notes about data quality, so nothing degrades silently."""
+    notes = []
+    if cache_meta and cache_meta.get("source") == "stale_cache":
+        mins = cache_meta["age_seconds"] / 60
+        notes.append(f"CelesTrak was unreachable; using cached TLEs from {mins:.0f} minutes ago")
+    if staleness:
+        if staleness.get("unreliable"):
+            notes.append(f"{staleness['unreliable']} object(s) have TLEs older than "
+                         f"{engine.UNRELIABLE_TLE_DAYS:g} days; their positions are unreliable")
+        if staleness.get("stale"):
+            notes.append(f"{staleness['stale']} object(s) have TLEs older than "
+                         f"{engine.STALE_TLE_DAYS:g} days; accuracy is degraded")
+    if skipped:
+        notes.append(f"{skipped} object(s) were skipped because SGP4 could not propagate them "
+                     "(decayed, malformed, or TLE too old)")
+    return notes
 
 
 def _http_error(exc: Exception, context: str) -> HTTPException:
@@ -73,8 +117,11 @@ def root():
 
 
 @app.get("/cache-status")
-def get_cache_status(group: str = "stations"):
-    """Show whether this group's data is cached and how old it is."""
+def get_cache_status(group: str = "stations", norad_id: int | None = None):
+    """Show whether a group's (or, with norad_id, a single object's) data is cached and how old it is."""
+    if norad_id is not None:
+        status = cache.single_cache_status(norad_id)
+        return {"norad_id": norad_id, "cached": False} if status is None else {"cached": True, **status}
     status = cache.cache_status(group)
     if status is None:
         return {"group": group, "cached": False}
@@ -90,10 +137,24 @@ def list_objects(group: str = "stations", limit: int | None = None):
       group: CelesTrak group name (default "stations", ~10 objects for
              quick testing; try "active" once you're ready to scale to 100+)
       limit: cap the number of objects returned
+
+    `count` is the number of objects actually returned; `requested` is how many TLEs
+    were fetched. Anything that could not be propagated is reported under `skipped`
+    instead of vanishing, and each object carries its TLE age/status.
     """
+    _check_limit(limit)
     try:
-        tles = _get_tles(group=group, limit=limit)
-        return {"count": len(tles), "objects": engine.propagate_many(tles)}
+        tles, cache_meta = _get_tles_meta(group=group, limit=limit)
+        out = engine.propagate_many_with_stats(tles)
+        return {
+            "count": len(out["objects"]),
+            "requested": len(tles),
+            "objects": out["objects"],
+            "skipped": out["skipped"],
+            "tle_staleness": out["tle_staleness"],
+            "cache": cache_meta,
+            "warnings": _warnings(out["tle_staleness"], out["skipped"]["count"], cache_meta),
+        }
     except Exception as exc:
         raise _http_error(exc, "Failed to fetch/propagate")
 
@@ -102,8 +163,8 @@ def list_objects(group: str = "stations", limit: int | None = None):
 def get_object(norad_id: int):
     """Return the current position for a single object by NORAD catalog ID."""
     try:
-        tle = engine.fetch_tle(norad_id)
-        return engine.propagate(tle)
+        tle, cache_meta = _get_tle(norad_id)
+        return {**engine.propagate(tle), "cache": cache_meta}
     except Exception as exc:
         raise _http_error(exc, f"Failed to fetch/propagate {norad_id}")
 
@@ -122,9 +183,26 @@ def get_trajectory(norad_id: int, hours: str = "0,1,6,12,24,48"):
         raise HTTPException(status_code=400, detail="hours must be comma-separated numbers, e.g. '0,1,6'")
 
     try:
-        tle = engine.fetch_tle(norad_id)
+        tle, cache_meta = _get_tle(norad_id)
         trajectory = engine.propagate_trajectory(tle, hours_ahead=hours_list)
-        return {"norad_id": norad_id, "count": len(trajectory), "trajectory": trajectory}
+        age = engine.tle_age_info(tle)
+        skipped_points = len(hours_list) - len(trajectory)
+        warnings = _warnings(cache_meta=cache_meta)
+        if age.get("tle_warning"):
+            warnings.append(age["tle_warning"])
+        if skipped_points:
+            warnings.append(f"{skipped_points} of {len(hours_list)} requested point(s) could not be "
+                            "propagated (SGP4 error - often a very old TLE or a time far from its epoch)")
+        return {
+            "norad_id": norad_id,
+            "count": len(trajectory),
+            "requested_points": len(hours_list),
+            "skipped_points": skipped_points,
+            **age,
+            "trajectory": trajectory,
+            "cache": cache_meta,
+            "warnings": warnings,
+        }
     except Exception as exc:
         raise _http_error(exc, f"Failed to predict trajectory for {norad_id}")
 
@@ -153,10 +231,12 @@ def list_conjunctions(
         raise HTTPException(status_code=400, detail="method must be 'naive' or 'kdtree'")
     if threshold_km <= 0:
         raise HTTPException(status_code=400, detail="threshold_km must be > 0")
+    _check_limit(limit)
 
     try:
-        tles = _get_tles(group=group, limit=limit)
-        objects = engine.propagate_many(tles)
+        tles, cache_meta = _get_tles_meta(group=group, limit=limit)
+        prop = engine.propagate_many_with_stats(tles)
+        objects = prop["objects"]
 
         if method == "kdtree":
             results = conj.find_conjunctions_kdtree(objects, threshold_km=threshold_km)
@@ -168,6 +248,11 @@ def list_conjunctions(
 
         return {
             "objects_checked": len(objects),
+            "objects_skipped": prop["skipped"]["count"],
+            "skipped": prop["skipped"],
+            "tle_staleness": prop["tle_staleness"],
+            "cache": cache_meta,
+            "warnings": _warnings(prop["tle_staleness"], prop["skipped"]["count"], cache_meta),
             "threshold_km": threshold_km,
             "method": method,
             "ml": ml,
@@ -216,6 +301,7 @@ def forecast_conjunctions(
         )
     if threshold_km <= 0:
         raise HTTPException(status_code=400, detail="threshold_km must be > 0")
+    _check_limit(limit)
 
     start_dt = None
     if start:
@@ -225,7 +311,7 @@ def forecast_conjunctions(
             raise HTTPException(status_code=400, detail="start must be ISO-8601, e.g. 2026-10-17T12:00:00Z")
 
     try:
-        tles = _get_tles(group=group, limit=limit)
+        tles, cache_meta = _get_tles_meta(group=group, limit=limit)
         n_steps = int(hours * 3600 / step_seconds) + 1
         if len(tles) * n_steps > MAX_FORECAST_WORK:
             raise HTTPException(
@@ -248,8 +334,35 @@ def forecast_conjunctions(
         if ml:
             results = ml_risk.score_conjunctions(results)
 
+        # TLE age at the window start, per object and overall
+        ref = start_dt or datetime.now(timezone.utc)
+        ages = {}
+        for t in tles:
+            try:
+                ages[int(t["line1"][2:7])] = engine.tle_age_info(t, ref)
+            except Exception:
+                continue          # malformed TLEs are already counted in objects_unpropagatable
+        staleness = engine.summarize_staleness(ages.values())
+        rank = {"fresh": 0, "stale": 1, "unreliable": 2}
+        unreliable_events = 0
+        for c in results:
+            worst = "fresh"
+            for key in ("object_1", "object_2"):
+                a = ages.get(c[key]["norad_id"])
+                if a:
+                    c[key]["tle_age_days"] = a["tle_age_days"]
+                    c[key]["tle_status"] = a["tle_status"]
+                    if rank[a["tle_status"]] > rank[worst]:
+                        worst = a["tle_status"]
+            c["tle_status"] = worst            # the weaker of the two TLEs
+            unreliable_events += worst == "unreliable"
+        warnings = _warnings(staleness, out["objects_unpropagatable"], cache_meta)
+        if unreliable_events:
+            warnings.append(f"{unreliable_events} conjunction(s) involve a TLE older than "
+                            f"{engine.UNRELIABLE_TLE_DAYS:g} days and may be spurious")
+
         return {
-            "window_start_utc": (start_dt or datetime.now(timezone.utc)).isoformat(),
+            "window_start_utc": ref.isoformat(),
             "hours": hours,
             "threshold_km": threshold_km,
             "step_seconds": step_seconds,
@@ -258,6 +371,9 @@ def forecast_conjunctions(
             "objects_unpropagatable": out["objects_unpropagatable"],
             "candidate_pairs": out["candidate_pairs"],
             "excluded_coorbiting_pairs": out["excluded_coorbiting_pairs"],
+            "tle_staleness": staleness,
+            "cache": cache_meta,
+            "warnings": warnings,
             "count": len(results),
             "conjunctions": results,
         }
@@ -285,16 +401,21 @@ def what_if_maneuver(
       altitude_delta_km: how much to shift altitude (+outward, -inward)
     """
     try:
-        tle_a = engine.fetch_tle(norad_id)
-        tle_b = engine.fetch_tle(other_norad_id)
-        obj_a = engine.propagate(tle_a)
-        obj_b = engine.propagate(tle_b)
+        tles, metas = _get_tles_by_ids([norad_id, other_norad_id])
+        obj_a = engine.propagate(tles[norad_id])
+        obj_b = engine.propagate(tles[other_norad_id])
 
         result = conj.simulate_altitude_adjustment(obj_a, obj_b, altitude_delta_km)
+        warnings = [f"{o['name']}: {o['tle_warning']}" for o in (obj_a, obj_b) if o.get("tle_warning")]
+        for m in metas.values():
+            warnings += _warnings(cache_meta=m)
         return {
-            "object_1": {"name": obj_a["name"], "norad_id": obj_a["norad_id"]},
-            "object_2": {"name": obj_b["name"], "norad_id": obj_b["norad_id"]},
+            "object_1": {"name": obj_a["name"], "norad_id": obj_a["norad_id"],
+                         "tle_age_days": obj_a["tle_age_days"], "tle_status": obj_a["tle_status"]},
+            "object_2": {"name": obj_b["name"], "norad_id": obj_b["norad_id"],
+                         "tle_age_days": obj_b["tle_age_days"], "tle_status": obj_b["tle_status"]},
             **result,
+            "warnings": list(dict.fromkeys(warnings)),
         }
     except Exception as exc:
         raise _http_error(exc, "Failed to simulate maneuver")

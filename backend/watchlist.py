@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 import auth
+import cache
 import orbit_engine as engine
 
 router = APIRouter(prefix="/watchlist", tags=["watchlist"])
@@ -72,11 +73,19 @@ def get_watchlist(live: bool = False, user: dict = Depends(auth.get_current_user
         conn.close()
 
     items = [dict(r) for r in rows]
-    if live:
-        # Attach the current position/altitude; one bad satellite must not break the list.
+    if live and items:
+        # One cache lookup for the whole list; only misses go to CelesTrak (a few in parallel).
+        # One bad satellite must not break the list.
+        tles, errors, metas = cache.get_tles_by_ids([i["norad_id"] for i in items], engine.fetch_tle)
         for item in items:
+            nid = item["norad_id"]
+            if nid in errors:
+                item["live_error"] = str(errors[nid])
+                continue
+            item["data_source"] = metas[nid]["source"]
             try:
-                pos = engine.propagate(engine.fetch_tle(item["norad_id"]))
+                item.update({k: v for k, v in engine.tle_age_info(tles[nid]).items()})
+                pos = engine.propagate(tles[nid])
                 item["name"] = item["name"] or pos["name"]
                 item["altitude_km"] = pos["altitude_km"]
                 item["position_km"] = pos["position_km"]

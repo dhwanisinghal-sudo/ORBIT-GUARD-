@@ -137,7 +137,7 @@ def test_module_validates_arguments(kwargs):
 # ---------------- API endpoint ----------------
 @pytest.fixture
 def client(monkeypatch):
-    monkeypatch.setattr(main, "_get_tles", lambda group="stations", limit=None, force_refresh=False: [ISS, CROSSER, FAR])
+    monkeypatch.setattr(main, "_get_tles_meta", lambda group="stations", limit=None, force_refresh=False: ([ISS, CROSSER, FAR], {"source": "cache", "age_seconds": 0.0}))
     return TestClient(main.app)
 
 
