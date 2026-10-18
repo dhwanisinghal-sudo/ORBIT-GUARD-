@@ -1,37 +1,106 @@
+
 const API_BASE = "http://127.0.0.1:8000";
 
-export async function getObjects(group = "stations", limit = 100) {
-  const response = await fetch(
-    `${API_BASE}/objects?group=${group}&limit=${limit}`
-  );
+const TOKEN_KEY = "orbitguard_access_token";
+const USER_KEY = "orbitguard_user";
+
+// Shared API helper
+async function apiRequest(path, options = {}) {
+  const token = localStorage.getItem(TOKEN_KEY);
+
+  const headers = {
+    ...(options.body ? { "Content-Type": "application/json" } : {}),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...options.headers,
+  };
+
+  const response = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers,
+  });
+
+  const data = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    throw new Error("Failed to fetch orbital objects");
+    const detail = data.detail;
+    const message = Array.isArray(detail)
+      ? detail.map((item) => item.msg).join(", ")
+      : typeof detail === "string"
+        ? detail
+        : "Something went wrong. Please try again.";
+
+    throw new Error(message);
   }
 
-  return response.json();
+  return data;
+}
+
+// Authentication
+export async function registerUser({ name, email, password }) {
+  const data = await apiRequest("/auth/register", {
+    method: "POST",
+    body: JSON.stringify({ name, email, password }),
+  });
+
+  saveSession(data);
+  return data;
+}
+
+export async function loginUser({ email, password }) {
+  const data = await apiRequest("/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ email, password }),
+  });
+
+  saveSession(data);
+  return data;
+}
+
+function saveSession(data) {
+  if (!data.access_token || !data.user) {
+    throw new Error("The server returned an invalid login response.");
+  }
+
+  localStorage.setItem(TOKEN_KEY, data.access_token);
+  localStorage.setItem(USER_KEY, JSON.stringify(data.user));
+}
+
+export async function getCurrentUser() {
+  return apiRequest("/auth/me");
+}
+
+export function getSavedUser() {
+  try {
+    const saved = localStorage.getItem(USER_KEY);
+    return saved ? JSON.parse(saved) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function logoutUser() {
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(USER_KEY);
+}
+
+export function isLoggedIn() {
+  return Boolean(localStorage.getItem(TOKEN_KEY));
+}
+
+// Existing orbital API functions
+export async function getObjects(group = "stations", limit = 100) {
+  return apiRequest(
+    `/objects?group=${encodeURIComponent(group)}&limit=${limit}`
+  );
 }
 
 export async function getObject(noradId) {
-  const response = await fetch(`${API_BASE}/objects/${noradId}`);
-
-  if (!response.ok) {
-    throw new Error("Failed to fetch object");
-  }
-
-  return response.json();
+  return apiRequest(`/objects/${encodeURIComponent(noradId)}`);
 }
 
-export async function getTrajectory(noradId) {
-  const response = await fetch(
-    `${API_BASE}/trajectory/${noradId}`
-  );
-
-  if (!response.ok) {
-    throw new Error("Failed to fetch trajectory");
-  }
-
-  return response.json();
+export async function getTrajectory(noradId, hours = null) {
+  const query = hours ? `?hours=${encodeURIComponent(hours)}` : "";
+  return apiRequest(`/trajectory/${encodeURIComponent(noradId)}${query}`);
 }
 
 export async function getConjunctions(
@@ -39,28 +108,36 @@ export async function getConjunctions(
   limit = 100,
   threshold = 5
 ) {
-  const response = await fetch(
-    `${API_BASE}/conjunctions?group=${group}&limit=${limit}&threshold_km=${threshold}`
+  return apiRequest(
+    `/conjunctions?group=${encodeURIComponent(group)}&limit=${limit}&threshold_km=${threshold}`
   );
-
-  if (!response.ok) {
-    throw new Error("Failed to fetch conjunctions");
-  }
-
-  return response.json();
 }
+
 export async function getWhatIf(
   noradId,
   otherNoradId,
   altitudeDeltaKm = 10
 ) {
-  const response = await fetch(
-    `${API_BASE}/what-if?norad_id=${noradId}&other_norad_id=${otherNoradId}&altitude_delta_km=${altitudeDeltaKm}`
+  return apiRequest(
+    `/what-if?norad_id=${encodeURIComponent(noradId)}&other_norad_id=${encodeURIComponent(otherNoradId)}&altitude_delta_km=${encodeURIComponent(altitudeDeltaKm)}`
   );
+}
 
-  if (!response.ok) {
-    throw new Error("Failed to run maneuver analysis");
-  }
+// ML risk scoring
+export async function getModelInfo() {
+  return apiRequest("/model-info");
+}
 
-  return response.json();
+export async function getRiskScore({
+  distance_km,
+  relative_velocity_km_s,
+  altitude_km,
+}) {
+  const params = new URLSearchParams({
+    distance_km: String(distance_km),
+    relative_velocity_km_s: String(relative_velocity_km_s),
+    altitude_km: String(altitude_km),
+  });
+
+  return apiRequest(`/risk-score?${params.toString()}`);
 }
