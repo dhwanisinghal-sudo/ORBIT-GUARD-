@@ -19,16 +19,18 @@ Retrain manually with:  python ml_risk.py
 
 import json
 import math
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
 import joblib
 import numpy as np
+import config
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, classification_report
 from sklearn.model_selection import train_test_split
 
-MODEL_DIR = Path(__file__).parent / "models"
+MODEL_DIR = config.DATA_DIR / "models"
 MODEL_PATH = MODEL_DIR / "risk_model.joblib"
 METRICS_PATH = MODEL_DIR / "risk_model_metrics.json"
 
@@ -42,7 +44,8 @@ CLASSES = ["LOW", "MEDIUM", "HIGH"]
 RNG_SEED = 42
 N_SAMPLES = 20000
 
-_model = None  # lazily loaded
+_model = None  # loaded at startup (warm_up) or lazily on first use
+_model_lock = threading.Lock()
 
 
 # ---------- synthetic training data ----------
@@ -123,16 +126,26 @@ def train(save: bool = True) -> dict:
 def _get_model():
     global _model
     if _model is None:
-        try:
-            _model = joblib.load(MODEL_PATH)
-        except Exception:
-            # Missing or saved with an incompatible sklearn version -> retrain.
-            _model = train()["model"]
+        with _model_lock:            # two simultaneous first requests must not both train
+            if _model is None:
+                try:
+                    _model = joblib.load(MODEL_PATH)
+                except Exception:
+                    # Missing or saved with an incompatible sklearn version -> retrain.
+                    _model = train()["model"]
     return _model
+
+
+def warm_up():
+    """Load (or train) the model now, so the first /conjunctions?ml=true isn't slow. Used at app startup."""
+    return _get_model()
 
 
 def get_metrics() -> dict:
     _get_model()
+    if not METRICS_PATH.exists():
+        # model file present but metrics file missing -> retrain to regenerate both
+        train()
     return json.loads(METRICS_PATH.read_text())
 
 

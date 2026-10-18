@@ -1,10 +1,14 @@
-fastapi
-uvicorn[standard]
-requests
-sgp4
-skyfield
-scipy
-numpy
-PyJWT
-scikit-learn
-joblib
+# Runtime dependencies, pinned to the versions the test suite passes on (Python 3.12).
+# To upgrade: bump here, run `pip install -r requirements-dev.txt && python -m pytest tests -q`.
+fastapi==0.143.3
+uvicorn[standard]==0.54.0
+pydantic==2.14.1
+requests==2.34.2
+sgp4==2.27
+scipy==1.18.1
+numpy==2.5.4
+PyJWT==2.15.1
+scikit-learn==1.9.1
+joblib==1.6.0
+psycopg[binary,pool]==3.3.6      # Postgres driver, only used when ORBITGUARD_DATABASE_URL is set
+psycopg-pool==3.3.3

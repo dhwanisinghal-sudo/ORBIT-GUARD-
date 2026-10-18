@@ -116,7 +116,7 @@ export async function getConjunctions(
 export async function getWhatIf(
   noradId,
   otherNoradId,
-  altitudeDeltaKm = 10
+  dvAlongMs = 1
 ) {
   return apiRequest(
     `/what-if?norad_id=${encodeURIComponent(noradId)}&other_norad_id=${encodeURIComponent(otherNoradId)}&altitude_delta_km=${encodeURIComponent(altitudeDeltaKm)}`

@@ -11,7 +11,7 @@ export default function ConjunctionAnalysis() {
 
   const [analysis, setAnalysis] = useState(null);
 
-  const [delta, setDelta] = useState(10);
+  const [delta, setDelta] = useState(1);
 
   const [loading, setLoading] = useState(true);
   const [simulating, setSimulating] = useState(false);
@@ -32,7 +32,7 @@ export default function ConjunctionAnalysis() {
             getWhatIf(
               object1Id,
               object2Id,
-              10
+              1
             ),
           ]);
 
@@ -241,8 +241,8 @@ export default function ConjunctionAnalysis() {
         </h3>
 
         <p>
-          Adjust Object 1's altitude and compare
-          the calculated separation.
+          Apply a prograde burn to Object 1 and compare
+          the closest approach before and after.
         </p>
 
 
@@ -250,7 +250,7 @@ export default function ConjunctionAnalysis() {
 
           <label>
 
-            ALTITUDE CHANGE
+            ALONG-TRACK ΔV
 
             <input
               type="number"
@@ -260,7 +260,7 @@ export default function ConjunctionAnalysis() {
               }
             />
 
-            <span>km</span>
+            <span>m/s</span>
 
           </label>
 

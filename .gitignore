@@ -6,3 +6,7 @@ models/risk_model.joblib
 backend/models/
 *.tle
 stations.tle
+
+.env
+*.db-wal
+*.db-shm
