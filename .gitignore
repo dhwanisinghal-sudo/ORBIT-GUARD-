@@ -4,6 +4,8 @@ orbitguard_cache.db
 orbitguard_users.db
 models/risk_model.joblib
 backend/models/
+*.tle
+stations.tle
 
 .env
 *.db-wal
