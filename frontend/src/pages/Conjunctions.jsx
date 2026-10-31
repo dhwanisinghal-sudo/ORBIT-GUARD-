@@ -83,7 +83,9 @@ export default function Conjunctions() {
           ) : (
             <div className="conjunction-list">
 
-              {data.conjunctions.map((item, index) => (
+              {[...data.conjunctions]
+                .sort((a, b) => Number(!!a.co_located) - Number(!!b.co_located))
+                .map((item, index) => (
                 <div className="conjunction-row" key={index}>
 
                   <div>
@@ -98,6 +100,10 @@ export default function Conjunctions() {
                     <strong>
                       {item.object_2.name}
                     </strong>
+
+                    {item.co_located && (
+                      <em> (DOCKED / CO-LOCATED)</em>
+                    )}
                   </div>
 
                   <div>
