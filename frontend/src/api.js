@@ -113,15 +113,17 @@ export async function getConjunctions(
   );
 }
 
+
 export async function getWhatIf(
   noradId,
   otherNoradId,
   dvAlongMs = 1
 ) {
   return apiRequest(
-    `/what-if?norad_id=${encodeURIComponent(noradId)}&other_norad_id=${encodeURIComponent(otherNoradId)}&altitude_delta_km=${encodeURIComponent(altitudeDeltaKm)}`
+    `/what-if?norad_id=${encodeURIComponent(noradId)}&other_norad_id=${encodeURIComponent(otherNoradId)}&dv_along_ms=${encodeURIComponent(dvAlongMs)}`
   );
 }
+
 
 // ML risk scoring
 export async function getModelInfo() {
