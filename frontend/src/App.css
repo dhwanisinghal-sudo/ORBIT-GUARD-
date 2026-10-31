@@ -992,6 +992,21 @@ input, select, textarea {
 .risk-text.high     { color: var(--risk-high); }
 .risk-text.medium   { color: var(--risk-medium); }
 .risk-text.low      { color: var(--risk-low); }
+.risk-text.docked   { color: var(--accent-cyan); }
+
+.risk-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+.risk-badge.critical { background: rgba(255, 77, 77, 0.15); color: var(--risk-critical); border: 1px solid rgba(255, 77, 77, 0.3); }
+.risk-badge.high     { background: rgba(255, 150, 61, 0.15); color: var(--risk-high); border: 1px solid rgba(255, 150, 61, 0.3); }
+.risk-badge.medium   { background: rgba(229, 197, 45, 0.15); color: var(--risk-medium); border: 1px solid rgba(229, 197, 45, 0.3); }
+.risk-badge.low      { background: rgba(32, 216, 138, 0.15); color: var(--risk-low); border: 1px solid rgba(32, 216, 138, 0.3); }
+.risk-badge.docked   { background: rgba(34, 211, 238, 0.15); color: var(--accent-cyan); border: 1px solid rgba(34, 211, 238, 0.3); }
 
 .analysis-button {
   display: inline-flex;
