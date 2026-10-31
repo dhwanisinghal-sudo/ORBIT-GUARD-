@@ -117,10 +117,15 @@ export async function getConjunctions(
 export async function getWhatIf(
   noradId,
   otherNoradId,
-  dvAlongMs = 1
+  dvAlongMs = 1,
+  { burnInHours = 0, windowHours = 24 } = {}
 ) {
   return apiRequest(
-    `/what-if?norad_id=${encodeURIComponent(noradId)}&other_norad_id=${encodeURIComponent(otherNoradId)}&dv_along_ms=${encodeURIComponent(dvAlongMs)}`
+    `/what-if?norad_id=${encodeURIComponent(noradId)}` +
+    `&other_norad_id=${encodeURIComponent(otherNoradId)}` +
+    `&dv_along_ms=${encodeURIComponent(dvAlongMs)}` +
+    `&burn_in_hours=${encodeURIComponent(burnInHours)}` +
+    `&window_hours=${encodeURIComponent(windowHours)}`
   );
 }
 
