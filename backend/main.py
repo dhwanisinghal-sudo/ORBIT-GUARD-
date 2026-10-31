@@ -253,6 +253,12 @@ def list_conjunctions(
         if ml:
             results = ml_risk.score_conjunctions(results)
 
+        # Docked / co-located pairs (e.g. a cargo ship attached to a station) are always "close";
+        # flag them so the UI can separate them from real close approaches.
+        for r in results:
+            r["co_located"] = (r["distance_km"] < maneuver.CO_LOCATED_KM
+                               and r["relative_velocity_km_s"] < maneuver.MIN_FAST_REL_SPEED)
+
         return {
             "objects_checked": len(objects),
             "objects_skipped": prop["skipped"]["count"],
