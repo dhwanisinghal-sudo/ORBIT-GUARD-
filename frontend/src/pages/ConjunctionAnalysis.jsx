@@ -200,6 +200,20 @@ export default function ConjunctionAnalysis() {
       </div>
 
 
+
+      {analysis.scenario?.co_located_at_start && (
+        <div className="content-card">
+          <h3>⚠ CO-LOCATED OBJECTS</h3>
+          <p>
+            These objects are only {analysis.scenario.initial_separation_km} km
+            apart with ~0 km/s relative speed (likely docked, or sharing the
+            same orbital data). The closest approach is the starting instant,
+            so a burn cannot change it. Use the drift numbers below, or pick a
+            pair with a real future conjunction.
+          </p>
+        </div>
+      )}
+
       <div className="content-card">
 
         <h3>
@@ -321,6 +335,41 @@ export default function ConjunctionAnalysis() {
           </div>
 
         </div>
+
+
+        {analysis.post_burn_separation_km && (
+          <div className="analysis-metrics">
+            <div>
+              <span>MAX SEPARATION (NO BURN)</span>
+              <strong>{analysis.post_burn_separation_km.before.max} km</strong>
+            </div>
+            <div>
+              <span>MAX SEPARATION (AFTER BURN)</span>
+              <strong>{analysis.post_burn_separation_km.after.max} km</strong>
+            </div>
+          </div>
+        )}
+
+        {analysis.closest_approaches?.after?.length > 1 && (
+          <div>
+            <p>CLOSEST APPROACHES AFTER BURN</p>
+            <ul>
+              {analysis.closest_approaches.after.map((a) => (
+                <li key={a.tca_utc}>
+                  {a.tca_utc} — {a.miss_distance_km} km
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {analysis.warnings?.length > 0 && (
+          <div>
+            {analysis.warnings.map((w) => (
+              <p key={w}>⚠ {w}</p>
+            ))}
+          </div>
+        )}
 
       </div>
 

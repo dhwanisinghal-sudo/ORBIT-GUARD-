@@ -41,6 +41,7 @@ REFINE_TOP_K = 12              # grid minima refined exactly (plus any within RE
 REFINE_BAND_KM = 15.0
 MAX_REFINE = 40
 MIN_FAST_REL_SPEED = 0.05      # km/s; slower pairs are "co-orbiting" and have no sharp TCA
+CO_LOCATED_KM = 1.0            # pair already this close (and this slow) at `start`: docked / shared TLE
 
 
 # ---------------------------------------------------------------- dynamics
@@ -250,6 +251,22 @@ def analyze_maneuver(tle_a: dict, tle_b: dict, *, dv_radial_ms: float = 0.0, dv_
     dist_at_orig = float(np.linalg.norm(rel_after(orig["_s"])[0]))
 
     notes = []
+
+    # Docked / co-located pair (e.g. a cargo ship attached to a station, or two objects sharing one
+    # TLE): the separation is ~0 at the start, so the "closest approach" is the start instant,
+    # which the burn cannot change. Flag it and report how far the burn pushes the pair apart.
+    sep0 = float(np.linalg.norm(ra[0] - rb[0]))
+    relspeed0 = float(np.linalg.norm(va[0] - vb[0]))
+    co_located = sep0 < CO_LOCATED_KM and relspeed0 < MIN_FAST_REL_SPEED
+    d_before_post = np.linalg.norm((ra - rb)[post], axis=1) if post.any() else np.zeros(1)
+    d_after_post = np.linalg.norm((ra2 - rb)[post], axis=1) if post.any() else np.zeros(1)
+    if co_located:
+        notes.append(
+            f"These two objects are co-located at the start ({sep0:.3f} km apart, "
+            f"{relspeed0:.4f} km/s relative speed) - typically docked, or sharing the same orbital data - "
+            "so the closest approach is the starting instant and a burn cannot change it. Look at "
+            "post_burn_separation_km to see how far the burn moves them apart, or pick a pair that "
+            "actually has a future conjunction.")
     if orig["_s"] < t_burn:
         notes.append("The closest approach in this window happens before the burn, so the burn "
                      "cannot change it; try a smaller burn_in_hours.")
@@ -273,6 +290,12 @@ def analyze_maneuver(tle_a: dict, tle_b: dict, *, dv_radial_ms: float = 0.0, dv_
         "after": {**_summary(after_list[0]), "distance_at_original_tca_km": round(dist_at_orig, 3)},
         "miss_distance_change_km": round(after_list[0]["miss_distance_km"] - orig["miss_distance_km"], 3),
         "closest_approaches": {"before": clean(before_list), "after": clean(after_list)},
+        "scenario": {"co_located_at_start": co_located, "initial_separation_km": round(sep0, 3),
+                     "initial_relative_speed_km_s": round(relspeed0, 4)},
+        "post_burn_separation_km": {
+            "before": {"at_window_end": round(float(d_before_post[-1]), 3), "max": round(float(d_before_post.max()), 3)},
+            "after": {"at_window_end": round(float(d_after_post[-1]), 3), "max": round(float(d_after_post.max()), 3)},
+        },
         "deprecation": ("altitude_delta_km is deprecated: it was converted to the along-track burn that "
                         "changes the semi-major axis by that amount. Use dv_along_ms / dv_radial_ms / "
                         "dv_cross_ms instead.") if legacy else None,

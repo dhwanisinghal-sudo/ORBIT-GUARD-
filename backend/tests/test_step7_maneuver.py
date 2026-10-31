@@ -179,3 +179,20 @@ def test_endpoint_validation_errors_are_400(client):
     assert client.get("/what-if", params={**PARAMS, "window_hours": 100}).status_code == 400
     assert client.get("/what-if", params={**PARAMS, "start": "not-a-date"}).status_code == 400
     assert client.get("/what-if", params={"norad_id": 40001}).status_code == 422      # other id missing
+
+
+# ---------------------------------------------------------------- docked / co-located pair
+def test_co_located_pair_is_flagged_and_burn_effect_still_visible():
+    """Two objects with identical orbital data (e.g. docked): TCA is the start instant, so the burn
+    can't change the headline number - the API must say so and expose the post-burn drift."""
+    twin = dict(A, name="TWIN")
+    out = maneuver.analyze_maneuver(A, twin, start=EPOCH, dv_along_ms=10.0, window_hours=6.0)
+    assert out["scenario"]["co_located_at_start"] is True
+    assert out["before"]["distance_km"] == 0 and out["after"]["distance_km"] == 0
+    assert any("co-located" in n for n in out["notes"])
+    assert out["post_burn_separation_km"]["before"]["max"] == 0
+    assert out["post_burn_separation_km"]["after"]["max"] > 100        # 10 m/s -> hundreds of km of drift
+
+
+def test_normal_pair_not_flagged_co_located():
+    assert run(dv_along_ms=1.0)["scenario"]["co_located_at_start"] is False
