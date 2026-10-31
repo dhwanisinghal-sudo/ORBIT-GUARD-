@@ -250,14 +250,18 @@ def list_conjunctions(
         else:
             results = conj.find_conjunctions_naive(objects, threshold_km=threshold_km)
 
-        if ml:
-            results = ml_risk.score_conjunctions(results)
-
         # Docked / co-located pairs (e.g. a cargo ship attached to a station) are always "close";
-        # flag them so the UI can separate them from real close approaches.
+        # flag them, give them no collision risk, and keep them out of the ML scorer.
         for r in results:
             r["co_located"] = (r["distance_km"] < maneuver.CO_LOCATED_KM
                                and r["relative_velocity_km_s"] < maneuver.MIN_FAST_REL_SPEED)
+        if ml:
+            ml_risk.score_conjunctions([r for r in results if not r["co_located"]])
+        for r in results:
+            if r["co_located"]:
+                r["risk_level"] = "DOCKED"
+                if ml:
+                    r["ml_risk_level"], r["ml_risk_score"], r["ml_probabilities"] = "DOCKED", None, None
 
         return {
             "objects_checked": len(objects),

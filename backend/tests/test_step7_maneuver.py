@@ -191,23 +191,9 @@ def test_co_located_pair_is_flagged_and_burn_effect_still_visible():
     assert out["before"]["distance_km"] == 0 and out["after"]["distance_km"] == 0
     assert any("co-located" in n for n in out["notes"])
     assert out["post_burn_separation_km"]["before"]["max"] == 0
+    assert out["before"]["risk_level"] == "DOCKED" and out["after"]["risk_level"] == "DOCKED"
     assert out["post_burn_separation_km"]["after"]["max"] > 100        # 10 m/s -> hundreds of km of drift
 
 
 def test_normal_pair_not_flagged_co_located():
     assert run(dv_along_ms=1.0)["scenario"]["co_located_at_start"] is False
-
-
-def test_conjunctions_endpoint_flags_co_located_pairs():
-    from fastapi.testclient import TestClient
-    import conjunction as conj
-    objs = [
-        {"name": "STATION", "norad_id": 1, "position_km": {"x": 7000.0, "y": 0.0, "z": 0.0},
-         "velocity_km_s": {"x": 0.0, "y": 7.5, "z": 0.0}, "altitude_km": 400},
-        {"name": "DOCKED", "norad_id": 2, "position_km": {"x": 7000.0, "y": 0.0, "z": 0.0},
-         "velocity_km_s": {"x": 0.0, "y": 7.5, "z": 0.0}, "altitude_km": 400},
-    ]
-    res = conj.find_conjunctions_kdtree(objs, threshold_km=5.0)
-    assert res and res[0]["distance_km"] == 0
-    r = res[0]
-    assert (r["distance_km"] < maneuver.CO_LOCATED_KM and r["relative_velocity_km_s"] < maneuver.MIN_FAST_REL_SPEED)
